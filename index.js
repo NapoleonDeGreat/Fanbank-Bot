@@ -313,9 +313,13 @@ app.get('/webhook', (req, res) => {
 });
 
 app.post('/webhook', async (req, res) => {
+  console.log('[WEBHOOK POST] Full body:', JSON.stringify(req.body, null, 2));
+
   res.sendStatus(200);
 
   try {
+    if (req.body?.object !== 'whatsapp_business_account') return;
+
     const entry = req.body?.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
