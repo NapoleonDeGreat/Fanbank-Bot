@@ -349,26 +349,22 @@ async function executeAirtime(phone, raw) {
 
 // ─── Main message handler ────────────────────────────────────────────────────
 
-async function handleMessage(phone, text, messageId, messageType, audioId) {
+async function handleMessage(phone, messageType, text, audioId, messageId) {
   const user = getUser(phone);
-
-  if (messageType === 'audio' && audioId) {
-    const receiver = process.env.RECEIVER_PHONE;
-    if (receiver) {
-      console.log(`[AUDIO] Forwarding audioId=${audioId} to ${receiver}`);
-      await sendAudio(receiver, audioId);
-    } else {
-      console.warn('[AUDIO] RECEIVER_PHONE not set — audio not forwarded');
-    }
-    return;
-  }
-
-  if (!text) return;
-  const lower = text.toLowerCase().trim();
 
   await sendTyping(phone, messageId);
 
-  if (lower === 'hi' || lower === 'hello' || lower === 'start') return showWelcome(phone);
+  if (user.state === 'AWAITING_VOICE') {
+    if (messageType === 'audio' && audioId) return completePendingTransfer(phone, audioId);
+    if (messageType === 'text' && text?.toLowerCase().trim() === 'skip') return completePendingTransfer(phone, null);
+    return sendMessage(phone, '🎙️ Send a voice note for the receiver or type *SKIP* to send without banter.');
+  }
+
+  if (messageType !== 'text' || !text) return;
+
+  const lower = text.toLowerCase().trim();
+
+  if (lower === 'hi' || lower === 'hello' || lower === 'start' || lower === 'howfar') return showWelcome(phone);
   if (/^[1-6]$/.test(lower) && CLUBS[lower]) return selectClub(phone, lower);
   if (lower === 'bal' || lower === 'balance') return showBalance(phone);
 
@@ -425,7 +421,7 @@ app.post('/webhook', async (req, res) => {
     if (!from) return;
 
     console.log(`[MSG] from=${from} type=${messageType} text="${text}" audioId=${audioId}`);
-    await handleMessage(from, text, messageId, messageType, audioId);
+    await handleMessage(from, messageType, text, audioId, messageId);
   } catch (err) {
     console.error('POST /webhook error:', err.message);
   }
