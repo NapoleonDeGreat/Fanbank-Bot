@@ -92,8 +92,28 @@ async function sendMessage(to, text) {
 
 // ─── Anchor placeholder ──────────────────────────────────────────────────────
 
+const BANK_CODES = {
+  'opay': '999111',
+  'gtbank': '058152036',
+  'gtb': '058152036',
+  'access': '044',
+  'zenith': '057',
+  'uba': '033',
+  'first bank': '011',
+  'firstbank': '011',
+  'kuda': '090267',
+  'palmpay': '999215',
+  'moniepoint': '090405',
+  'wema': '035',
+  'stanbic': '039',
+  'union': '032',
+  'sterling': '232',
+};
+
 async function anchorTransfer(amount, accountNumber, bankName) {
   try {
+    const bankCode = BANK_CODES[bankName.toLowerCase()] || bankName;
+
     const transferRes = await axios.post(
       'https://api.sandbox.getanchor.co/api/v1/transfers',
       {
@@ -103,7 +123,7 @@ async function anchorTransfer(amount, accountNumber, bankName) {
             amount: amount * 100,
             narration: 'FanBank Transfer',
             destinationAccountNumber: accountNumber,
-            destinationBankCode: bankName,
+            destinationBankCode: bankCode,
             sourceAccountId: process.env.ANCHOR_FBO_ACCOUNT_ID
           }
         }
