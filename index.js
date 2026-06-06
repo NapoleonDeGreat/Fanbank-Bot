@@ -289,28 +289,9 @@ async function executeTransfer(phone, raw) {
     return;
   }
 
-  user.state = null;
-  user.pendingTransfer = null;
-
-  const result = await anchorTransfer(amount, accountNumber, bankName);
-  if (result.success) {
-    user.balance = Math.max(0, user.balance - amount);
-    user.xp += 50;
-    const colors = user.clubData?.colors || '🏦';
-    const banter = await claudeGenerateBanterReceipt(user.club, user.clubData, amount, accountNumber, bankName);
-    await sendMessage(
-      phone,
-      `${colors} *Transfer Successful!*\n\n` +
-      `Amount: ₦${amount.toLocaleString()}\n` +
-      `Account: ${accountNumber}\n` +
-      `Bank: ${bankName}\n\n` +
-      `🎭 *Banter Receipt:*\n${banter}\n\n` +
-      `+50 XP earned!\n\n` +
-      `🎙️ Type VOICE BANTER for a 10-sec savage voice note about this transfer!`
-    );
-  } else {
-    await sendMessage(phone, 'Transfer failed! Something went wrong. Please try again.');
-  }
+  user.pendingTransfer = { amount, accountNumber, bankName };
+  user.state = 'AWAITING_VOICE';
+  await sendMessage(phone, '🎙️ Before I send, record a short BANTER voice note for the receiver!\n\nSend it now — or type *SKIP* to send without voice banter.');
 }
 
 async function executeAirtime(phone, raw) {
