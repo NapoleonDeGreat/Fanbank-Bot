@@ -43,14 +43,16 @@ function getUser(phone) {
 
 // ─── Typing indicator ────────────────────────────────────────────────────────
 
-async function sendTyping(to, messageId) {
+async function sendTyping(to) {
   try {
     await axios.post(
       `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: 'whatsapp',
-        status: 'read',
-        message_id: messageId,
+        recipient_type: 'individual',
+        to,
+        type: 'typing_indicator',
+        typing_indicator: { type: 'text' }
       },
       {
         headers: {
@@ -60,7 +62,7 @@ async function sendTyping(to, messageId) {
       }
     );
   } catch (err) {
-    // Non-blocking
+    console.error('sendTyping error:', err?.response?.data || err.message);
   }
 }
 
