@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const Anthropic = require('@anthropic-ai/sdk');
+const { Pool } = require('pg');
 
 const app = express();
 app.use(express.json());
@@ -13,7 +14,30 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const ANCHOR_API_KEY = process.env.ANCHOR_API_KEY;
 
-const users = {};
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+async function initDb() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      phone VARCHAR(20) PRIMARY KEY,
+      name VARCHAR(255),
+      club VARCHAR(100),
+      club_emoji VARCHAR(10),
+      club_colors VARCHAR(20),
+      club_rival VARCHAR(100),
+      balance INTEGER NOT NULL DEFAULT 5000,
+      fansave INTEGER NOT NULL DEFAULT 1200,
+      xp INTEGER NOT NULL DEFAULT 450,
+      streak INTEGER NOT NULL DEFAULT 3,
+      rank VARCHAR(100) NOT NULL DEFAULT 'Bronze Banter',
+      state VARCHAR(50),
+      pending_transfer TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  console.log('Database ready');
+}
 
 const CLUBS = {
   '1': { name: 'Arsenal', emoji: '🔴', colors: '🔴⚪', rival: 'Tottenham' },
@@ -24,22 +48,84 @@ const CLUBS = {
   '6': { name: 'Real Madrid', emoji: '⚪', colors: '⚪🟡', rival: 'Barcelona' },
 };
 
-function getUser(phone) {
-  if (!users[phone]) {
-    users[phone] = {
-      name: null,
-      club: null,
-      clubData: null,
-      balance: 5000,
-      fansave: 1200,
-      xp: 450,
-      streak: 3,
-      rank: 'Bronze Banter',
-      state: null,
-      pendingTransfer: null,
-    };
+function rowToUser(row) {
+  return {
+    name: row.name,
+    club: row.club,
+    clubData: row.club ? {
+      name: row.club,
+      emoji: row.club_emoji,
+      colors: row.club_colors,
+      rival: row.club_rival,
+    } : null,
+    balance: row.balance,
+    fansave: row.fansave,
+    xp: row.xp,
+    streak: row.streak,
+    rank: row.rank,
+    state: row.state,
+    pendingTransfer: row.pending_transfer,
+  };
+}
+
+async function getUser(phone) {
+  const res = await pool.query('SELECT * FROM users WHERE phone = $1', [phone]);
+  if (res.rows.length > 0) {
+    return rowToUser(res.rows[0]);
   }
-  return users[phone];
+  await pool.query(
+    `INSERT INTO users (phone) VALUES ($1) ON CONFLICT (phone) DO NOTHING`,
+    [phone]
+  );
+  return {
+    name: null,
+    club: null,
+    clubData: null,
+    balance: 5000,
+    fansave: 1200,
+    xp: 450,
+    streak: 3,
+    rank: 'Bronze Banter',
+    state: null,
+    pendingTransfer: null,
+  };
+}
+
+async function saveUser(phone, user) {
+  await pool.query(
+    `INSERT INTO users (phone, name, club, club_emoji, club_colors, club_rival,
+       balance, fansave, xp, streak, rank, state, pending_transfer, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+     ON CONFLICT (phone) DO UPDATE SET
+       name = EXCLUDED.name,
+       club = EXCLUDED.club,
+       club_emoji = EXCLUDED.club_emoji,
+       club_colors = EXCLUDED.club_colors,
+       club_rival = EXCLUDED.club_rival,
+       balance = EXCLUDED.balance,
+       fansave = EXCLUDED.fansave,
+       xp = EXCLUDED.xp,
+       streak = EXCLUDED.streak,
+       rank = EXCLUDED.rank,
+       state = EXCLUDED.state,
+       pending_transfer = EXCLUDED.pending_transfer,
+       updated_at = NOW()`,
+    [
+      phone,
+      user.name,
+      user.club,
+      user.clubData?.emoji || null,
+      user.clubData?.colors || null,
+      user.clubData?.rival || null,
+      user.balance,
+      user.fansave,
+      user.xp,
+      user.streak,
+      user.rank,
+      user.state,
+      user.pendingTransfer,
+    ]
+  );
 }
 
 // ─── Typing indicator ────────────────────────────────────────────────────────
@@ -206,7 +292,6 @@ async function claudeGenerateBanterReceipt(senderClub, clubData, amount, account
 // ─── Claude: general chat ────────────────────────────────────────────────────
 
 async function claudeRespond(phone, text) {
-  const user = getUser(phone);
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 200,
@@ -227,10 +312,11 @@ async function showWelcome(phone) {
 }
 
 async function selectClub(phone, choice) {
-  const user = getUser(phone);
+  const user = await getUser(phone);
   const club = CLUBS[choice];
   user.club = club.name;
   user.clubData = club;
+  await saveUser(phone, user);
   await sendMessage(
     phone,
     `${club.colors} Oya! You are now a proud ${club.name} fan on FanBank!\n\nYour banter journey don begin! Type BAL to see your wallet, SEND to transfer money, or BUY AIRTIME for airtime.`
@@ -238,7 +324,7 @@ async function selectClub(phone, choice) {
 }
 
 async function showBalance(phone) {
-  const user = getUser(phone);
+  const user = await getUser(phone);
   const colors = user.clubData?.colors || '🏦';
   const club = user.club ? `${user.club} fan` : 'FanBank member';
   await sendMessage(
@@ -248,7 +334,7 @@ async function showBalance(phone) {
 }
 
 async function executeTransfer(phone, raw) {
-  const user = getUser(phone);
+  const user = await getUser(phone);
   const parts = raw.split('|').map((p) => p.trim());
   if (parts.length < 3) {
     await sendMessage(phone, 'Format no correct o! Send like this:\n\nAMOUNT | ACCOUNT_NUMBER | BANK_NAME\n\nExample: 5000 | 0123456789 | GTBank');
@@ -273,6 +359,7 @@ async function executeTransfer(phone, raw) {
   if (result.success) {
     user.balance = Math.max(0, user.balance - amount);
     user.xp += 50;
+    await saveUser(phone, user);
     const colors = user.clubData?.colors || '🏦';
     const banter = await claudeGenerateBanterReceipt(user.club, user.clubData, amount, accountNumber, bankName);
     await sendMessage(
@@ -286,12 +373,14 @@ async function executeTransfer(phone, raw) {
       `🎙️ Type VOICE BANTER for a 10-sec savage voice note about this transfer!`
     );
   } else {
+    user.state = null;
+    await saveUser(phone, user);
     await sendMessage(phone, 'Transfer failed! Something went wrong. Please try again.');
   }
 }
 
 async function executeAirtime(phone, raw) {
-  const user = getUser(phone);
+  const user = await getUser(phone);
   const parts = raw.split('|').map((p) => p.trim());
   if (parts.length < 2) {
     await sendMessage(phone, 'Format no correct! Send like this:\n\nPHONE_NUMBER | AMOUNT\n\nExample: 08012345678 | 500');
@@ -314,12 +403,14 @@ async function executeAirtime(phone, raw) {
   if (result.success) {
     user.balance = Math.max(0, user.balance - amount);
     user.xp += 20;
+    await saveUser(phone, user);
     const colors = user.clubData?.colors || '🏦';
     await sendMessage(
       phone,
       `${colors} *Airtime Sent!*\n\nPhone: ${airtimePhone}\nAmount: ₦${amount.toLocaleString()}\n\n+20 XP earned! Na you baddest!`
     );
   } else {
+    await saveUser(phone, user);
     await sendMessage(phone, 'Airtime purchase failed! Try again or contact support.');
   }
 }
@@ -327,7 +418,7 @@ async function executeAirtime(phone, raw) {
 // ─── Main message handler ────────────────────────────────────────────────────
 
 async function handleMessage(phone, text, messageId) {
-  const user = getUser(phone);
+  const user = await getUser(phone);
   const lower = text.toLowerCase().trim();
 
   await sendTyping(phone, messageId);
@@ -338,11 +429,13 @@ async function handleMessage(phone, text, messageId) {
 
   if (lower.includes('send') || lower.includes('transfer')) {
     user.state = 'TRANSFER';
+    await saveUser(phone, user);
     return sendMessage(phone, 'Okay! Who you wan send money to?\n\nReply with:\nAMOUNT | ACCOUNT_NUMBER | BANK_NAME\n\nExample:\n5000 | 0123456789 | GTBank');
   }
 
   if (lower.includes('buy airtime')) {
     user.state = 'AIRTIME';
+    await saveUser(phone, user);
     return sendMessage(phone, 'No wahala! Which number and how much?\n\nReply with:\nPHONE_NUMBER | AMOUNT\n\nExample:\n08012345678 | 500');
   }
 
@@ -395,6 +488,11 @@ app.post('/webhook', async (req, res) => {
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
-  console.log(`FanBank webhook server running on port ${PORT}`);
+initDb().then(() => {
+  app.listen(PORT, () => {
+    console.log(`FanBank webhook server running on port ${PORT}`);
+  });
+}).catch(err => {
+  console.error('Failed to initialise database:', err.message);
+  process.exit(1);
 });
