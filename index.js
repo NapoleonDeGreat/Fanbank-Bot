@@ -94,36 +94,17 @@ async function sendMessage(to, text) {
 
 async function anchorTransfer(amount, accountNumber, bankName) {
   try {
-    // Step 1: Resolve account name
-    const resolveRes = await axios.post(
-      'https://api.sandbox.getanchor.co/api/v1/transfers/resolve',
-      {
-        data: {
-          type: 'AccountNumberLookup',
-          attributes: {
-            accountNumber,
-            bankCode: bankName
-          }
-        }
-      },
-      {
-        headers: {
-          'Content-Type': 'application/vnd.api+json',
-          'x-anchor-key': process.env.ANCHOR_API_KEY
-        }
-      }
-    );
-    // Step 2: Initiate transfer
     const transferRes = await axios.post(
       'https://api.sandbox.getanchor.co/api/v1/transfers',
       {
         data: {
           type: 'NIPTransfer',
           attributes: {
-            amount: amount * 100, // Anchor uses kobo
+            amount: amount * 100,
             narration: 'FanBank Transfer',
             destinationAccountNumber: accountNumber,
-            destinationBankCode: bankName
+            destinationBankCode: bankName,
+            sourceAccountId: process.env.ANCHOR_FBO_ACCOUNT_ID
           }
         }
       },
@@ -136,7 +117,7 @@ async function anchorTransfer(amount, accountNumber, bankName) {
     );
     return { success: true, data: transferRes.data };
   } catch (err) {
-    console.error('Anchor transfer error:', err?.response?.data || err.message);
+    console.error('Anchor error:', err?.response?.data || err.message);
     return { success: false, error: err?.response?.data };
   }
 }
