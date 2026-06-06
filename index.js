@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+const ANCHOR_API_KEY = process.env.ANCHOR_API_KEY;
 
 const users = {};
 
@@ -92,8 +93,52 @@ async function sendMessage(to, text) {
 // ─── Anchor placeholder ──────────────────────────────────────────────────────
 
 async function anchorTransfer(amount, accountNumber, bankName) {
-  console.log(`[Anchor] Transfer ₦${amount} to ${accountNumber} at ${bankName}`);
-  return { success: true };
+  try {
+    // Step 1: Resolve account name
+    const resolveRes = await axios.post(
+      'https://api.sandbox.getanchor.co/api/v1/transfers/resolve',
+      {
+        data: {
+          type: 'AccountNumberLookup',
+          attributes: {
+            accountNumber,
+            bankCode: bankName
+          }
+        }
+      },
+      {
+        headers: {
+          'Content-Type': 'application/vnd.api+json',
+          'x-anchor-key': process.env.ANCHOR_API_KEY
+        }
+      }
+    );
+    // Step 2: Initiate transfer
+    const transferRes = await axios.post(
+      'https://api.sandbox.getanchor.co/api/v1/transfers',
+      {
+        data: {
+          type: 'NIPTransfer',
+          attributes: {
+            amount: amount * 100, // Anchor uses kobo
+            narration: 'FanBank Transfer',
+            destinationAccountNumber: accountNumber,
+            destinationBankCode: bankName
+          }
+        }
+      },
+      {
+        headers: {
+          'Content-Type': 'application/vnd.api+json',
+          'x-anchor-key': process.env.ANCHOR_API_KEY
+        }
+      }
+    );
+    return { success: true, data: transferRes.data };
+  } catch (err) {
+    console.error('Anchor transfer error:', err?.response?.data || err.message);
+    return { success: false, error: err?.response?.data };
+  }
 }
 
 // ─── VTPass placeholder ──────────────────────────────────────────────────────
