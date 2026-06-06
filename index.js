@@ -93,26 +93,52 @@ async function sendMessage(to, text) {
 // ─── Anchor placeholder ──────────────────────────────────────────────────────
 
 const BANK_CODES = {
-  'opay': '999111',
-  'gtbank': '058152036',
-  'gtb': '058152036',
-  'access': '044',
-  'zenith': '057',
-  'uba': '033',
-  'first bank': '011',
-  'firstbank': '011',
+  'opay': '100004',
+  'gtbank': '000013',
+  'gtb': '000013',
+  'access': '000014',
+  'zenith': '000015',
+  'uba': '000004',
+  'first bank': '000016',
+  'firstbank': '000016',
   'kuda': '090267',
-  'palmpay': '999215',
+  'palmpay': '100033',
   'moniepoint': '090405',
-  'wema': '035',
-  'stanbic': '039',
-  'union': '032',
-  'sterling': '232',
+  'wema': '000017',
+  'stanbic': '000012',
+  'union': '000018',
+  'sterling': '000001',
+  'providus': '000023',
+  'fidelity': '000007',
 };
 
 async function anchorTransfer(amount, accountNumber, bankName) {
   try {
     const bankCode = BANK_CODES[bankName.toLowerCase()] || bankName;
+
+    const cpRes = await axios.post(
+      'https://api.sandbox.getanchor.co/api/v1/counterparties',
+      {
+        data: {
+          type: 'CounterParty',
+          attributes: {
+            accountName: 'FanBank User',
+            accountNumber: accountNumber,
+            bankCode: bankCode
+          }
+        }
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'accept': 'application/json',
+          'x-anchor-key': process.env.ANCHOR_API_KEY
+        }
+      }
+    );
+
+    const counterpartyId = cpRes.data?.data?.id;
+    if (!counterpartyId) throw new Error('No counterparty ID returned');
 
     const transferRes = await axios.post(
       'https://api.sandbox.getanchor.co/api/v1/transfers',
@@ -121,20 +147,29 @@ async function anchorTransfer(amount, accountNumber, bankName) {
           type: 'NIPTransfer',
           attributes: {
             amount: amount * 100,
-            narration: 'FanBank Transfer',
-            destinationAccountNumber: accountNumber,
-            destinationBankCode: bankCode,
-            sourceAccountId: process.env.ANCHOR_FBO_ACCOUNT_ID
+            currency: 'NGN',
+            reason: 'FanBank Transfer',
+            reference: 'fanbank_' + Date.now()
+          },
+          relationships: {
+            counterParty: {
+              data: { type: 'CounterParty', id: counterpartyId }
+            },
+            account: {
+              data: { type: 'DepositAccount', id: process.env.ANCHOR_FBO_ACCOUNT_ID }
+            }
           }
         }
       },
       {
         headers: {
-          'Content-Type': 'application/vnd.api+json',
+          'Content-Type': 'application/json',
+          'accept': 'application/json',
           'x-anchor-key': process.env.ANCHOR_API_KEY
         }
       }
     );
+
     return { success: true, data: transferRes.data };
   } catch (err) {
     console.error('Anchor error:', err?.response?.data || err.message);
