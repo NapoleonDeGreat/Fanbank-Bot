@@ -380,10 +380,12 @@ app.post('/webhook', async (req, res) => {
     if (!message) return;
 
     const from = message.from;
-    const text = message?.text?.body;
     const messageId = message.id;
+    const messageType = message.type;
+    const text = message?.text?.body || null;
+    const audioId = message?.audio?.id || null;
 
-    if (!from || !text) return;
+    if (!from) return;
 
     console.log(`[MSG] from=${from} text="${text}"`);
     await handleMessage(from, text, messageId);
