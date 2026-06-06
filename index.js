@@ -216,7 +216,7 @@ async function claudeGenerateBanterReceipt(senderClub, clubData, amount, account
     model: 'claude-sonnet-4-20250514',
     max_tokens: 150,
     system:
-      'You are FanBank banter generator. Generate ONE short savage football banter receipt message maximum 3 sentences. Use Nigerian expressions. Be funny and savage about the sender club. Reference their rival. Never make up transaction details. Just write the banter text only.',
+      `You are FanBank banter generator. Generate ONE short savage football banter receipt message maximum 3 sentences. Use Nigerian expressions. You are a LOYAL fan of ${senderClub} — NEVER mock ${senderClub}. Savage their rival ${rival} mercilessly. Hype up the sender for being a ${senderClub} legend. Never make up transaction details. Just write the banter text only.`,
     messages: [
       {
         role: 'user',
