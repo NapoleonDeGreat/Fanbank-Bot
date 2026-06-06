@@ -250,7 +250,7 @@ async function handleMessage(phone, text, messageId) {
   const user = getUser(phone);
   const lower = text.toLowerCase().trim();
 
-  await sendTyping(phone, messageId);
+  await sendTyping(phone);
 
   if (lower === 'hi' || lower === 'hello' || lower === 'start') return showWelcome(phone);
   if (/^[1-6]$/.test(lower) && CLUBS[lower]) return selectClub(phone, lower);
