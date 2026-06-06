@@ -90,6 +90,30 @@ async function sendMessage(to, text) {
   }
 }
 
+// ─── WhatsApp audio forward ──────────────────────────────────────────────────
+
+async function sendAudio(to, audioId) {
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'audio',
+        audio: { id: audioId },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  } catch (err) {
+    console.error('sendAudio error:', err?.response?.data || err.message);
+  }
+}
+
 // ─── Anchor transfer ─────────────────────────────────────────────────────────
 
 const BANK_CODES = {
@@ -325,8 +349,21 @@ async function executeAirtime(phone, raw) {
 
 // ─── Main message handler ────────────────────────────────────────────────────
 
-async function handleMessage(phone, text, messageId) {
+async function handleMessage(phone, text, messageId, messageType, audioId) {
   const user = getUser(phone);
+
+  if (messageType === 'audio' && audioId) {
+    const receiver = process.env.RECEIVER_PHONE;
+    if (receiver) {
+      console.log(`[AUDIO] Forwarding audioId=${audioId} to ${receiver}`);
+      await sendAudio(receiver, audioId);
+    } else {
+      console.warn('[AUDIO] RECEIVER_PHONE not set — audio not forwarded');
+    }
+    return;
+  }
+
+  if (!text) return;
   const lower = text.toLowerCase().trim();
 
   await sendTyping(phone, messageId);
@@ -387,8 +424,8 @@ app.post('/webhook', async (req, res) => {
 
     if (!from) return;
 
-    console.log(`[MSG] from=${from} text="${text}"`);
-    await handleMessage(from, text, messageId);
+    console.log(`[MSG] from=${from} type=${messageType} text="${text}" audioId=${audioId}`);
+    await handleMessage(from, text, messageId, messageType, audioId);
   } catch (err) {
     console.error('POST /webhook error:', err.message);
   }
