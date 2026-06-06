@@ -294,6 +294,43 @@ async function executeTransfer(phone, raw) {
   await sendMessage(phone, '🎙️ Before I send, record a short BANTER voice note for the receiver!\n\nSend it now — or type *SKIP* to send without voice banter.');
 }
 
+async function completePendingTransfer(phone, audioId) {
+  const user = getUser(phone);
+  const { amount, accountNumber, bankName } = user.pendingTransfer;
+
+  user.state = null;
+  user.pendingTransfer = null;
+
+  const result = await anchorTransfer(amount, accountNumber, bankName);
+
+  if (result.success) {
+    user.balance = Math.max(0, user.balance - amount);
+    user.xp += 50;
+    const colors = user.clubData?.colors || '🏦';
+    const banter = await claudeGenerateBanterReceipt(user.club, user.clubData, amount, accountNumber, bankName);
+
+    if (audioId) {
+      const receiver = process.env.RECEIVER_PHONE;
+      if (receiver) {
+        console.log(`[AUDIO] Forwarding banter voice note audioId=${audioId} to ${receiver}`);
+        await sendAudio(receiver, audioId);
+      }
+    }
+
+    await sendMessage(
+      phone,
+      `${colors} *Transfer Successful!*\n\n` +
+      `Amount: ₦${amount.toLocaleString()}\n` +
+      `Account: ${accountNumber}\n` +
+      `Bank: ${bankName}\n\n` +
+      `🎭 *Banter Receipt:*\n${banter}\n\n` +
+      `+50 XP earned!${audioId ? '\n\n🎙️ Your banter voice note don land for the receiver!' : ''}`
+    );
+  } else {
+    await sendMessage(phone, 'Transfer failed! Something went wrong. Please try again.');
+  }
+}
+
 async function executeAirtime(phone, raw) {
   const user = getUser(phone);
   const parts = raw.split('|').map((p) => p.trim());
