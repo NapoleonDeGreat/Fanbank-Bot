@@ -43,15 +43,14 @@ function getUser(phone) {
 
 // ─── Typing indicator ────────────────────────────────────────────────────────
 
-async function sendTyping(to) {
+async function sendTyping(to, messageId) {
   try {
     await axios.post(
       `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: 'whatsapp',
-        recipient_type: 'individual',
-        to,
-        type: 'typing_indicator',
+        status: 'read',
+        message_id: messageId,
         typing_indicator: { type: 'text' }
       },
       {
@@ -250,7 +249,7 @@ async function handleMessage(phone, text, messageId) {
   const user = getUser(phone);
   const lower = text.toLowerCase().trim();
 
-  await sendTyping(phone);
+  await sendTyping(phone, messageId);
 
   if (lower === 'hi' || lower === 'hello' || lower === 'start') return showWelcome(phone);
   if (/^[1-6]$/.test(lower) && CLUBS[lower]) return selectClub(phone, lower);
