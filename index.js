@@ -103,16 +103,28 @@ function parseAmount(str) {
   return parseFloat(cleaned);
 }
 
-// ─── Club colours for welcome image ──────────────────────────────────────────
+// ─── Club colours ─────────────────────────────────────────────────────────────
 
 const CLUB_COLORS = {
   'Arsenal':    { bg: '#DB0007', text: '#FFFFFF' },
   'Chelsea':    { bg: '#034694', text: '#FFFFFF' },
-  'Man United': { bg: '#DA291C', text: '#FFE500' },
-  'Liverpool':  { bg: '#C8102E', text: '#00B2A9' },
-  'Barcelona':  { bg: '#004D98', text: '#FFFFFF' },
-  'Real Madrid':{ bg: '#FEBE10', text: '#00529F' },
+  'Man United': { bg: '#DA291C', text: '#FFFFFF' },
+  'Liverpool':  { bg: '#C8102E', text: '#FFFFFF' },
+  'Barcelona':  { bg: '#A50044', text: '#FFFFFF' },
+  'Real Madrid':{ bg: '#FEBE10', text: '#FFFFFF' },
 };
+
+function getClubColors(club) {
+  const map = {
+    'Arsenal':    '🔴⚪',
+    'Chelsea':    '🔵⚪',
+    'Man United': '🔴⚫',
+    'Liverpool':  '🔴⚪',
+    'Barcelona':  '🔵🔴',
+    'Real Madrid':'⚪🟡',
+  };
+  return map[club] || '🏦';
+}
 
 const CLUBS = {
   '1': { name: 'Arsenal',    emoji: '🔴', colors: '🔴⚪', rival: 'Tottenham'   },
@@ -213,15 +225,13 @@ async function generateWelcomeImage(name, accountNumber, clubName) {
 
 // ─── Anchor: create customer + deposit account ────────────────────────────────
 
-async function createAnchorAccount(phone, name, bvn) {
-  const e164 = phone.startsWith('234') ? '+' + phone : phone;
-
+async function createAnchorAccount(name, bvn) {
   const customerRes = await axios.post(
     'https://api.sandbox.getanchor.co/api/v1/customers',
     {
       data: {
         type: 'IndividualCustomer',
-        attributes: { fullName: name, phoneNumber: e164, bvn }
+        attributes: { fullName: name, bvn }
       }
     },
     {
@@ -387,7 +397,7 @@ async function selectClub(phone, choice) {
 
 async function showBalance(phone) {
   const user = await getUser(phone);
-  const colors = user.clubData?.colors || '🏦';
+  const colors = getClubColors(user.club);
   const club = user.club ? `${user.club} fan` : 'FanBank member';
   await sendMessage(
     phone,
@@ -441,7 +451,7 @@ async function completePendingTransfer(phone, audioId) {
     user.xp += 50;
     await saveUser(phone, user);
 
-    const colors = user.clubData?.colors || '🏦';
+    const colors = getClubColors(user.club);
     const banter = await claudeGenerateBanterReceipt(user.club, user.clubData, amount, accountNumber, bankName);
 
     if (audioId) {
@@ -493,7 +503,7 @@ async function executeAirtime(phone, raw) {
     user.balance = Math.max(0, user.balance - amount);
     user.xp += 20;
     await saveUser(phone, user);
-    const colors = user.clubData?.colors || '🏦';
+    const colors = getClubColors(user.club);
     await sendMessage(
       phone,
       `${colors} *Airtime Sent!*\n\nPhone: ${airtimePhone}\nAmount: ₦${amount.toLocaleString()}\n\n+20 XP earned! Na you baddest!`
@@ -539,7 +549,7 @@ async function handleMessage(phone, messageType, text, audioId, messageId) {
     await sendMessage(phone, '⏳ Setting up your FanBank account, hold on...');
 
     try {
-      const { customerId, accountNumber, bankName } = await createAnchorAccount(phone, user.name, bvn);
+      const { customerId, accountNumber, bankName } = await createAnchorAccount(user.name, bvn);
 
       user.anchorCustomerId = customerId;
       user.anchorAccountNumber = accountNumber;
@@ -634,6 +644,7 @@ app.post('/webhook', async (req, res) => {
     if (message.type === 'interactive') {
       text = message?.interactive?.button_reply?.title ||
              message?.interactive?.list_reply?.title || null;
+      if (text) text = text.replace(/[^\w\s]/gi, '').trim();
     }
     const audioId = message?.audio?.id || null;
 
