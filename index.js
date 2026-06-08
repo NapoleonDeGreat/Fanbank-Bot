@@ -3,153 +3,276 @@ const axios = require('axios');
 const Anthropic = require('@anthropic-ai/sdk');
 const { createClient } = require('@supabase/supabase-js');
 const sharp = require('sharp');
-const FormData = require('form-data');
-const WebSocket = require('ws');
 
 const app = express();
 app.use(express.json());
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY,
-  { realtime: { transport: WebSocket } }
-);
-
 const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// ─── In-memory cache (write-through to Supabase) ─────────────────────────────
+// Supabase — use service role key so RLS doesn't block server writes
+const supabase = createClient(
+  process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
+);
 
-const userCache = {};
-
-async function getUser(phone) {
-  if (userCache[phone]) return userCache[phone];
-
-  const { data, error } = await supabase
-    .from('users')
-    .select('*')
-    .eq('phone', phone)
-    .single();
-
-  if (data) {
-    const user = {
-      name: data.name,
-      club: data.club,
-      clubData: data.club
-        ? { name: data.club, emoji: data.club_emoji, colors: data.club_colors, rival: data.club_rival }
-        : null,
-      balance: data.balance,
-      fansave: data.fansave,
-      xp: data.xp,
-      streak: data.streak,
-      rank: data.rank,
-      state: data.state,
-      pendingTransfer: data.pending_transfer,
-      anchorCustomerId: data.anchor_customer_id,
-      anchorAccountNumber: data.anchor_account_number,
-      anchorBankName: data.anchor_bank_name,
-    };
-    userCache[phone] = user;
-    return user;
-  }
-
-  const defaultUser = {
-    name: null, club: null, clubData: null,
-    balance: 5000, fansave: 1200, xp: 450,
-    streak: 3, rank: 'Bronze Banter',
-    state: null, pendingTransfer: null,
-    anchorCustomerId: null, anchorAccountNumber: null, anchorBankName: null,
-  };
-
-  await supabase.from('users').insert({ phone });
-  userCache[phone] = defaultUser;
-  return defaultUser;
-}
-
-async function saveUser(phone, user) {
-  userCache[phone] = user;
-  await supabase.from('users').upsert({
-    phone,
-    name: user.name,
-    club: user.club,
-    club_emoji: user.clubData?.emoji || null,
-    club_colors: user.clubData?.colors || null,
-    club_rival: user.clubData?.rival || null,
-    balance: user.balance,
-    fansave: user.fansave,
-    xp: user.xp,
-    streak: user.streak,
-    rank: user.rank,
-    state: user.state,
-    pending_transfer: user.pendingTransfer,
-    anchor_customer_id: user.anchorCustomerId,
-    anchor_account_number: user.anchorAccountNumber,
-    anchor_bank_name: user.anchorBankName,
-    updated_at: new Date().toISOString(),
-  });
-}
-
-// ─── Amount parser (supports 15k → 15000, 1.5k → 1500) ──────────────────────
-
-function parseAmount(str) {
-  const cleaned = String(str).trim().toLowerCase().replace(/,/g, '');
-  if (cleaned.endsWith('k')) {
-    return parseFloat(cleaned.slice(0, -1)) * 1000;
-  }
-  return parseFloat(cleaned);
-}
-
-// ─── Club colours ─────────────────────────────────────────────────────────────
-
-const CLUB_COLORS = {
-  'Arsenal':    { bg: '#DB0007', text: '#FFFFFF' },
-  'Chelsea':    { bg: '#034694', text: '#FFFFFF' },
-  'Man United': { bg: '#DA291C', text: '#FFFFFF' },
-  'Liverpool':  { bg: '#C8102E', text: '#FFFFFF' },
-  'Barcelona':  { bg: '#A50044', text: '#FFFFFF' },
-  'Real Madrid':{ bg: '#FEBE10', text: '#FFFFFF' },
-};
-
-function getClubColors(club) {
-  const map = {
-    'Arsenal':    '🔴⚪',
-    'Chelsea':    '🔵⚪',
-    'Man United': '🔴⚫',
-    'Liverpool':  '🔴⚪',
-    'Barcelona':  '🔵🔴',
-    'Real Madrid':'⚪🟡',
-  };
-  return map[club] || '🏦';
-}
+// ─── Club config ──────────────────────────────────────────────────────────────
 
 const CLUBS = {
-  '1': { name: 'Arsenal',    emoji: '🔴', colors: '🔴⚪', rival: 'Tottenham'   },
-  '2': { name: 'Chelsea',    emoji: '🔵', colors: '🔵⚪', rival: 'Arsenal'     },
+  '1': { name: 'Arsenal',    emoji: '🔴', colors: '🔴⚪', rival: 'Tottenham'  },
+  '2': { name: 'Chelsea',    emoji: '🔵', colors: '🔵⚪', rival: 'Arsenal'    },
   '3': { name: 'Man United', emoji: '🔴', colors: '🔴⚫', rival: 'Man City'   },
   '4': { name: 'Liverpool',  emoji: '🔴', colors: '🔴⚪', rival: 'Everton'    },
-  '5': { name: 'Barcelona',  emoji: '🔵', colors: '🔵🔴', rival: 'Real Madrid' },
+  '5': { name: 'Barcelona',  emoji: '🔵', colors: '🔵🔴', rival: 'Real Madrid'},
   '6': { name: 'Real Madrid',emoji: '⚪', colors: '⚪🟡', rival: 'Barcelona'  },
 };
 
-// ─── Typing indicator ────────────────────────────────────────────────────────
+// hex accent for each club (used in welcome flier)
+const CLUB_HEX = {
+  'Arsenal':    { bg: '#EF0107', text: '#FFFFFF' },
+  'Chelsea':    { bg: '#034694', text: '#FFFFFF' },
+  'Man United': { bg: '#DA291C', text: '#000000' },
+  'Liverpool':  { bg: '#C8102E', text: '#FFFFFF' },
+  'Barcelona':  { bg: '#A50044', text: '#FFED00' },
+  'Real Madrid':{ bg: '#FEBE10', text: '#00529F' },
+};
+
+// ─── DB helpers ───────────────────────────────────────────────────────────────
+
+async function getUser(phone) {
+  const { data, error } = await supabase
+    .from('fanbank_users')
+    .select('*')
+    .eq('phone', phone)
+    .maybeSingle();
+  if (error) console.error('getUser error:', error.message);
+  return data;
+}
+
+async function upsertUser(phone, fields) {
+  const { error } = await supabase
+    .from('fanbank_users')
+    .upsert({ phone, ...fields, updated_at: new Date().toISOString() }, { onConflict: 'phone' });
+  if (error) console.error('upsertUser error:', error.message);
+}
+
+async function ensureUser(phone) {
+  let user = await getUser(phone);
+  if (!user) {
+    await upsertUser(phone, {
+      balance: 5000,
+      fansave: 1200,
+      xp: 450,
+      streak: 3,
+      rank: 'Bronze Banter',
+      state: null,
+      pending_transfer: null,
+      pin: null,
+    });
+    user = await getUser(phone);
+  }
+  return user;
+}
+
+// ─── Anchor bank codes ────────────────────────────────────────────────────────
+
+const BANK_CODES = {
+  'opay': '100004',
+  'gtbank': '000013', 'gtb': '000013',
+  'access': '000014',
+  'zenith': '000015',
+  'uba': '000004',
+  'first bank': '000016', 'firstbank': '000016',
+  'kuda': '090267',
+  'palmpay': '100033',
+  'moniepoint': '090405',
+  'wema': '000017',
+  'stanbic': '000012',
+  'union': '000018',
+  'sterling': '000001',
+  'providus': '000023',
+  'fidelity': '000007',
+};
+
+// ─── Anchor API helpers ───────────────────────────────────────────────────────
+
+const ANCHOR_BASE = 'https://api.sandbox.getanchor.co/api/v1';
+const anchorHeaders = {
+  'Content-Type': 'application/json',
+  'accept': 'application/json',
+  'x-anchor-key': process.env.ANCHOR_API_KEY,
+};
+
+async function anchorLookupBVN(bvn) {
+  try {
+    const res = await axios.get(`${ANCHOR_BASE}/customers?bvn=${bvn}`, { headers: anchorHeaders });
+    const customer = res.data?.data?.[0];
+    if (customer) {
+      const a = customer.attributes;
+      return {
+        name: `${a.firstName || ''} ${a.lastName || ''}`.trim(),
+        customerId: customer.id,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function anchorCreateCustomer(fullName, bvn) {
+  const [firstName, ...rest] = fullName.trim().split(' ');
+  const lastName = rest.join(' ') || firstName;
+  try {
+    const res = await axios.post(
+      `${ANCHOR_BASE}/customers`,
+      {
+        data: {
+          type: 'IndividualCustomer',
+          attributes: { firstName, lastName, bvn: bvn || '00000000000' },
+        },
+      },
+      { headers: anchorHeaders }
+    );
+    return res.data?.data?.id || null;
+  } catch (err) {
+    console.error('anchorCreateCustomer error:', err?.response?.data || err.message);
+    return null;
+  }
+}
+
+async function anchorCreateVirtualAccount(customerId) {
+  try {
+    const res = await axios.post(
+      `${ANCHOR_BASE}/accounts`,
+      {
+        data: {
+          type: 'DepositAccount',
+          attributes: { currency: 'NGN', productName: 'SAVINGS' },
+          relationships: {
+            customer: { data: { type: 'IndividualCustomer', id: customerId } },
+          },
+        },
+      },
+      { headers: anchorHeaders }
+    );
+    const acct = res.data?.data;
+    return {
+      accountId: acct?.id,
+      accountNumber: acct?.attributes?.accountNumber,
+    };
+  } catch (err) {
+    console.error('anchorCreateVirtualAccount error:', err?.response?.data || err.message);
+    return null;
+  }
+}
+
+async function anchorTransfer(amount, accountNumber, bankName) {
+  try {
+    const bankCode = BANK_CODES[bankName.toLowerCase()] || bankName;
+
+    const cpRes = await axios.post(
+      `${ANCHOR_BASE}/counterparties`,
+      {
+        data: {
+          type: 'CounterParty',
+          attributes: {
+            accountName: 'FanBank User',
+            accountNumber,
+            bankCode,
+          },
+        },
+      },
+      { headers: anchorHeaders }
+    );
+    const counterpartyId = cpRes.data?.data?.id;
+    if (!counterpartyId) throw new Error('No counterparty ID returned');
+
+    const transferRes = await axios.post(
+      `${ANCHOR_BASE}/transfers`,
+      {
+        data: {
+          type: 'NIPTransfer',
+          attributes: {
+            amount: amount * 100,
+            currency: 'NGN',
+            reason: 'FanBank Transfer',
+            reference: `fanbank_${Date.now()}`,
+          },
+          relationships: {
+            counterParty: { data: { type: 'CounterParty', id: counterpartyId } },
+            account: { data: { type: 'DepositAccount', id: process.env.ANCHOR_FBO_ACCOUNT_ID } },
+          },
+        },
+      },
+      { headers: anchorHeaders }
+    );
+    return { success: true, data: transferRes.data };
+  } catch (err) {
+    console.error('Anchor transfer error:', err?.response?.data || err.message);
+    return { success: false, error: err?.response?.data };
+  }
+}
+
+// ─── VTPass placeholder ───────────────────────────────────────────────────────
+
+async function vtpassAirtime(phone, amount) {
+  console.log(`[VTPass] Airtime ₦${amount} to ${phone}`);
+  return { success: true };
+}
+
+// ─── Claude helpers ───────────────────────────────────────────────────────────
+
+async function claudeGenerateBanterReceipt(senderClub, clubData, amount, accountNumber, bankName) {
+  const rival = clubData?.rival || 'their rival';
+  const msg = await anthropic.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 150,
+    system:
+      'You are FanBank banter generator. Generate ONE short savage football banter receipt message maximum 3 sentences. Use Nigerian expressions. Be funny and savage about the sender club. Reference their rival. Never make up transaction details. Just write the banter text only.',
+    messages: [
+      {
+        role: 'user',
+        content: `Sender supports ${senderClub || 'unknown club'} (rival: ${rival}). They just sent ₦${amount} to account ${accountNumber} at ${bankName}. Write the savage banter receipt.`,
+      },
+    ],
+  });
+  return msg.content[0].text;
+}
+
+async function claudeRespond(phone, text) {
+  const msg = await anthropic.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 200,
+    system:
+      "You are FanBank AI assistant for the World's First Banter Neo Gaming Bank. You speak like a witty Nigerian football fan. Use Nigerian expressions naturally. You help users understand FanBank features. You NEVER confirm transactions, NEVER quote balances, NEVER process payments — tell users to type SEND for transfers, BAL for balance, BUY AIRTIME for airtime. You only chat, explain features, and generate banter. Keep responses short for WhatsApp.",
+    messages: [{ role: 'user', content: text }],
+  });
+  await sendMessage(phone, msg.content[0].text);
+}
+
+// ─── WhatsApp send helpers ────────────────────────────────────────────────────
 
 async function sendTyping(to, messageId) {
   try {
     await axios.post(
       `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
-      { messaging_product: 'whatsapp', status: 'read', message_id: messageId, typing_indicator: { type: 'text' } },
+      {
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: messageId,
+        typing_indicator: { type: 'text' },
+      },
       { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } }
     );
   } catch (err) {
     console.error('sendTyping error:', err?.response?.data || err.message);
   }
 }
-
-// ─── WhatsApp text helper ────────────────────────────────────────────────────
 
 async function sendMessage(to, text) {
   try {
@@ -163,9 +286,87 @@ async function sendMessage(to, text) {
   }
 }
 
-// ─── WhatsApp audio forward ──────────────────────────────────────────────────
+// Prefix every outgoing message with the user's club colors
+async function sendClubMessage(to, text, user) {
+  const colors = user?.club_data?.colors || user?.clubData?.colors || '🏦';
+  await sendMessage(to, `${colors} ${text}`);
+}
 
-async function sendAudio(to, audioId) {
+async function sendQuickReplies(to) {
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: { text: 'Quick actions:' },
+          action: {
+            buttons: [
+              { type: 'reply', reply: { id: 'FUND',  title: '💰 FUND' } },
+              { type: 'reply', reply: { id: 'SEND',  title: '💸 SEND' } },
+              { type: 'reply', reply: { id: 'BAL',   title: '📊 BAL'  } },
+            ],
+          },
+        },
+      },
+      { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } }
+    );
+  } catch (err) {
+    console.error('sendQuickReplies error:', err?.response?.data || err.message);
+  }
+}
+
+// Send text then quick-reply buttons
+async function reply(to, text, user) {
+  await sendClubMessage(to, text, user);
+  await sendQuickReplies(to);
+}
+
+async function sendInteractiveList(to) {
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'list',
+          body: { text: 'Pick your club and let the banter begin! 🏆' },
+          action: {
+            button: 'Choose Club',
+            sections: [
+              {
+                title: 'Premier League',
+                rows: [
+                  { id: 'club_1', title: '🔴⚪ Arsenal',    description: 'The Gunners' },
+                  { id: 'club_2', title: '🔵⚪ Chelsea',    description: 'The Blues' },
+                  { id: 'club_3', title: '🔴⚫ Man United', description: 'The Red Devils' },
+                  { id: 'club_4', title: '🔴⚪ Liverpool',  description: 'The Reds' },
+                ],
+              },
+              {
+                title: 'La Liga',
+                rows: [
+                  { id: 'club_5', title: '🔵🔴 Barcelona',   description: 'Blaugrana' },
+                  { id: 'club_6', title: '⚪🟡 Real Madrid', description: 'Los Blancos' },
+                ],
+              },
+            ],
+          },
+        },
+      },
+      { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } }
+    );
+  } catch (err) {
+    console.error('sendInteractiveList error:', err?.response?.data || err.message);
+  }
+}
+
+async function forwardAudio(to, audioId) {
   try {
     await axios.post(
       `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
@@ -173,16 +374,54 @@ async function sendAudio(to, audioId) {
       { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } }
     );
   } catch (err) {
-    console.error('sendAudio error:', err?.response?.data || err.message);
+    console.error('forwardAudio error:', err?.response?.data || err.message);
   }
 }
 
-// ─── WhatsApp image sender ───────────────────────────────────────────────────
+// ─── Welcome flier (Sharp) ────────────────────────────────────────────────────
 
-async function sendImageBuffer(to, imageBuffer, caption = '') {
+async function generateWelcomeFlier(user) {
+  const clubName = user.club || 'FanBank';
+  const theme = CLUB_HEX[clubName] || { bg: '#1a1a2e', text: '#ffffff' };
+  const name = user.name || 'Fan';
+  const acctNum = user.account_number || '—';
+  const emoji = user.club_data?.emoji || '🏦';
+
+  const svg = `
+<svg width="800" height="450" xmlns="http://www.w3.org/2000/svg">
+  <rect width="800" height="450" fill="${theme.bg}"/>
+  <rect x="0" y="0" width="800" height="8" fill="rgba(255,255,255,0.3)"/>
+  <rect x="0" y="442" width="800" height="8" fill="rgba(255,255,255,0.3)"/>
+  <text x="400" y="80" font-family="Arial Black,Arial,sans-serif" font-size="52" font-weight="900"
+        fill="${theme.text}" text-anchor="middle" letter-spacing="4">FanBank</text>
+  <text x="400" y="115" font-family="Arial,sans-serif" font-size="16"
+        fill="${theme.text}" text-anchor="middle" opacity="0.75">World's First Banter Neo Gaming Bank</text>
+  <text x="400" y="195" font-family="Arial,sans-serif" font-size="72" text-anchor="middle">${emoji}</text>
+  <text x="400" y="260" font-family="Arial Black,Arial,sans-serif" font-size="36" font-weight="900"
+        fill="${theme.text}" text-anchor="middle">${name}</text>
+  <text x="400" y="300" font-family="Arial,sans-serif" font-size="18"
+        fill="${theme.text}" text-anchor="middle" opacity="0.85">${clubName} Fan</text>
+  <rect x="150" y="325" width="500" height="2" fill="${theme.text}" opacity="0.3"/>
+  <text x="400" y="365" font-family="monospace,Arial,sans-serif" font-size="28" font-weight="700"
+        fill="${theme.text}" text-anchor="middle" letter-spacing="3">${acctNum}</text>
+  <text x="400" y="395" font-family="Arial,sans-serif" font-size="14"
+        fill="${theme.text}" text-anchor="middle" opacity="0.6">FanBank Virtual Account • Powered by Anchor</text>
+  <text x="400" y="430" font-family="Arial,sans-serif" font-size="12"
+        fill="${theme.text}" text-anchor="middle" opacity="0.5">fanbank.ng</text>
+</svg>`;
+
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+async function sendWelcomeFlier(phone, user) {
   try {
+    const imgBuf = await generateWelcomeFlier(user);
+    const b64 = imgBuf.toString('base64');
+
+    // Upload image via WhatsApp media API
+    const FormData = require('form-data');
     const form = new FormData();
-    form.append('file', imageBuffer, { filename: 'welcome.png', contentType: 'image/png' });
+    form.append('file', imgBuf, { filename: 'welcome.png', contentType: 'image/png' });
     form.append('type', 'image/png');
     form.append('messaging_product', 'whatsapp');
 
@@ -191,425 +430,355 @@ async function sendImageBuffer(to, imageBuffer, caption = '') {
       form,
       { headers: { ...form.getHeaders(), Authorization: `Bearer ${WHATSAPP_TOKEN}` } }
     );
-
-    const mediaId = uploadRes.data.id;
+    const mediaId = uploadRes.data?.id;
+    if (!mediaId) return;
 
     await axios.post(
       `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
-      { messaging_product: 'whatsapp', to, type: 'image', image: { id: mediaId, caption } },
+      {
+        messaging_product: 'whatsapp',
+        to: phone,
+        type: 'image',
+        image: { id: mediaId, caption: `${user.club_data?.colors || '🏦'} Welcome to FanBank, ${user.name}! Your account is ready. 🎉` },
+      },
       { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } }
     );
   } catch (err) {
-    console.error('sendImageBuffer error:', err?.response?.data || err.message);
+    console.error('sendWelcomeFlier error:', err?.response?.data || err.message);
   }
 }
 
-// ─── Welcome image generator ─────────────────────────────────────────────────
-
-async function generateWelcomeImage(name, accountNumber, clubName) {
-  const { bg, text } = CLUB_COLORS[clubName] || { bg: '#1a1a2e', text: '#FFFFFF' };
-  const svg = Buffer.from(`<svg width="800" height="450" xmlns="http://www.w3.org/2000/svg">
-    <rect width="800" height="450" fill="${bg}"/>
-    <rect x="0" y="0" width="800" height="8" fill="${text}" opacity="0.4"/>
-    <rect x="0" y="442" width="800" height="8" fill="${text}" opacity="0.4"/>
-    <text x="400" y="100" text-anchor="middle" fill="${text}" font-size="56" font-weight="bold" font-family="Arial, sans-serif">FanBank</text>
-    <text x="400" y="145" text-anchor="middle" fill="${text}" font-size="18" font-family="Arial, sans-serif" opacity="0.85">World's First Banter Neo Gaming Bank</text>
-    <line x1="80" y1="175" x2="720" y2="175" stroke="${text}" stroke-width="1" opacity="0.3"/>
-    <text x="400" y="240" text-anchor="middle" fill="${text}" font-size="36" font-family="Arial, sans-serif">Welcome, ${name}!</text>
-    <text x="400" y="295" text-anchor="middle" fill="${text}" font-size="22" font-family="Arial, sans-serif" opacity="0.85">Virtual Account Number</text>
-    <text x="400" y="345" text-anchor="middle" fill="${text}" font-size="38" font-weight="bold" font-family="Arial, sans-serif">${accountNumber}</text>
-    <text x="400" y="410" text-anchor="middle" fill="${text}" font-size="20" font-family="Arial, sans-serif" opacity="0.75">${clubName} Fan 🏟️</text>
-  </svg>`);
-  return sharp(svg).png().toBuffer();
-}
-
-// ─── Anchor: create customer + deposit account ────────────────────────────────
-
-async function createAnchorAccount(name, bvn) {
-  const customerRes = await axios.post(
-    'https://api.sandbox.getanchor.co/api/v1/customers',
-    {
-      data: {
-        type: 'IndividualCustomer',
-        attributes: { fullName: name, bvn }
-      }
-    },
-    {
-      headers: {
-        'Content-Type': 'application/json',
-        'accept': 'application/json',
-        'x-anchor-key': process.env.ANCHOR_API_KEY
-      }
-    }
-  );
-
-  const customerId = customerRes.data?.data?.id;
-  if (!customerId) throw new Error('No customer ID from Anchor');
-
-  const accountRes = await axios.post(
-    'https://api.sandbox.getanchor.co/api/v1/deposit-accounts',
-    {
-      data: {
-        type: 'DepositAccount',
-        attributes: { productName: 'SAVING', currency: 'NGN' },
-        relationships: {
-          customer: { data: { type: 'IndividualCustomer', id: customerId } }
-        }
-      }
-    },
-    {
-      headers: {
-        'Content-Type': 'application/json',
-        'accept': 'application/json',
-        'x-anchor-key': process.env.ANCHOR_API_KEY
-      }
-    }
-  );
-
-  const attrs = accountRes.data?.data?.attributes;
-  const accountNumber = attrs?.accountNumber;
-  const bankName = attrs?.bankName || 'Anchor Bank';
-
-  return { customerId, accountNumber, bankName };
-}
-
-// ─── Anchor: transfer ────────────────────────────────────────────────────────
-
-const BANK_CODES = {
-  'opay': '100004', 'gtbank': '000013', 'gtb': '000013',
-  'access': '000014', 'zenith': '000015', 'uba': '000004',
-  'first bank': '000016', 'firstbank': '000016', 'kuda': '090267',
-  'palmpay': '100033', 'moniepoint': '090405', 'wema': '000017',
-  'stanbic': '000012', 'union': '000018', 'sterling': '000001',
-  'providus': '000023', 'fidelity': '000007',
-};
-
-async function anchorTransfer(amount, accountNumber, bankName) {
-  try {
-    const bankCode = BANK_CODES[bankName.toLowerCase()] || bankName;
-
-    const cpRes = await axios.post(
-      'https://api.sandbox.getanchor.co/api/v1/counterparties',
-      {
-        data: {
-          type: 'CounterParty',
-          attributes: { accountName: 'FanBank User', accountNumber, bankCode }
-        }
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'accept': 'application/json',
-          'x-anchor-key': process.env.ANCHOR_API_KEY
-        }
-      }
-    );
-
-    const counterpartyId = cpRes.data?.data?.id;
-    if (!counterpartyId) throw new Error('No counterparty ID returned');
-
-    const transferRes = await axios.post(
-      'https://api.sandbox.getanchor.co/api/v1/transfers',
-      {
-        data: {
-          type: 'NIPTransfer',
-          attributes: {
-            amount: amount * 100,
-            currency: 'NGN',
-            reason: 'FanBank Transfer',
-            reference: 'fanbank_' + Date.now()
-          },
-          relationships: {
-            counterParty: { data: { type: 'CounterParty', id: counterpartyId } },
-            account: { data: { type: 'DepositAccount', id: process.env.ANCHOR_FBO_ACCOUNT_ID } }
-          }
-        }
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'accept': 'application/json',
-          'x-anchor-key': process.env.ANCHOR_API_KEY
-        }
-      }
-    );
-
-    return { success: true, data: transferRes.data };
-  } catch (err) {
-    console.error('Anchor transfer error:', err?.response?.data || err.message);
-    return { success: false, error: err?.response?.data };
-  }
-}
-
-// ─── VTPass placeholder ──────────────────────────────────────────────────────
-
-async function vtpassAirtime(phone, amount) {
-  console.log(`[VTPass] Airtime ₦${amount} to ${phone}`);
-  return { success: true };
-}
-
-// ─── Claude: banter receipt ──────────────────────────────────────────────────
-
-async function claudeGenerateBanterReceipt(senderClub, clubData, amount, accountNumber, bankName) {
-  const rival = clubData?.rival || 'their rival';
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 150,
-    system: `You are FanBank banter generator. Generate ONE short savage football banter receipt message maximum 3 sentences. Use Nigerian expressions. You are a LOYAL fan of ${senderClub} — NEVER mock ${senderClub}. Savage their rival ${rival} mercilessly. Hype up the sender for being a ${senderClub} legend. Never make up transaction details. Just write the banter text only.`,
-    messages: [{
-      role: 'user',
-      content: `Sender supports ${senderClub || 'unknown club'} (rival: ${rival}). They just sent ₦${amount} to account ${accountNumber} at ${bankName}. Write the savage banter receipt.`,
-    }],
-  });
-  return message.content[0].text;
-}
-
-// ─── Claude: general chat ────────────────────────────────────────────────────
-
-async function claudeRespond(phone, text) {
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 200,
-    system: 'You are FanBank AI assistant for the World\'s First Banter Neo Gaming Bank. You speak like a witty Nigerian football fan. Use Nigerian expressions naturally. You help users understand FanBank features. You NEVER confirm transactions, NEVER quote balances, NEVER process payments — tell users to type SEND for transfers, BAL for balance, BUY AIRTIME for airtime. You only chat, explain features, and generate banter. Keep responses short for WhatsApp.',
-    messages: [{ role: 'user', content: text }],
-  });
-  await sendMessage(phone, message.content[0].text);
-}
-
-// ─── Flow handlers ───────────────────────────────────────────────────────────
+// ─── Onboarding flow ──────────────────────────────────────────────────────────
 
 async function showWelcome(phone) {
   await sendMessage(
     phone,
-    'Welcome to FanBank — World\'s First Banter Neo Gaming Bank!\n\nChoose your club to get started:\n\n1️⃣  Arsenal\n2️⃣  Chelsea\n3️⃣  Man United\n4️⃣  Liverpool\n5️⃣  Barcelona\n6️⃣  Real Madrid\n\nReply with the number of your club!'
+    '🏦 Welcome to *FanBank* — World\'s First Banter Neo Gaming Bank!\n\nBank with your club. Transfer money with savage banter. Earn XP for every flex.\n\nChoose your club to get started 👇'
+  );
+  await sendInteractiveList(phone);
+}
+
+async function handleClubSelection(phone, clubKey) {
+  const club = CLUBS[clubKey];
+  await upsertUser(phone, {
+    club: club.name,
+    club_data: club,
+    state: 'AWAITING_BVN',
+  });
+  const user = await getUser(phone);
+  await reply(phone, `${club.emoji} *${club.name}* selected! Na true supporter!\n\nNow enter your BVN to verify your identity and open your account:\n\n_(Reply with your 11-digit BVN)_`, user);
+}
+
+async function handleBVN(phone, bvnText) {
+  const bvn = bvnText.trim().replace(/\s/g, '');
+  const user = await getUser(phone);
+
+  if (!/^\d{11}$/.test(bvn)) {
+    await reply(phone, '❌ BVN must be exactly 11 digits. Try again:', user);
+    return;
+  }
+
+  await reply(phone, '🔍 Verifying your BVN... one moment...', user);
+
+  const lookup = await anchorLookupBVN(bvn);
+  if (lookup) {
+    await upsertUser(phone, {
+      name: lookup.name,
+      anchor_customer_id: lookup.customerId,
+      state: 'CREATING_ACCOUNT',
+    });
+    const updated = await getUser(phone);
+    await finishOnboarding(phone, bvn, lookup.name, lookup.customerId, updated);
+  } else {
+    await upsertUser(phone, { state: 'AWAITING_NIN', pending_transfer: { bvn } });
+    await reply(phone, '⚠️ BVN lookup failed. Enter your NIN as fallback (11 digits):', user);
+  }
+}
+
+async function handleNIN(phone, ninText) {
+  const nin = ninText.trim().replace(/\s/g, '');
+  const user = await getUser(phone);
+
+  if (!/^\d{11}$/.test(nin)) {
+    await reply(phone, '❌ NIN must be exactly 11 digits. Try again:', user);
+    return;
+  }
+
+  // NIN lookup not available in sandbox — fall through to manual name
+  await upsertUser(phone, { state: 'AWAITING_NAME' });
+  await reply(phone, '📝 Enter your full name to continue:', user);
+}
+
+async function handleManualName(phone, nameText) {
+  const name = nameText.trim();
+  const user = await getUser(phone);
+  if (name.length < 3) {
+    await reply(phone, '❌ Name too short. Enter your full name:', user);
+    return;
+  }
+  const bvn = user.pending_transfer?.bvn;
+  const customerId = await anchorCreateCustomer(name, bvn);
+  await upsertUser(phone, {
+    name,
+    anchor_customer_id: customerId,
+    state: 'CREATING_ACCOUNT',
+    pending_transfer: null,
+  });
+  const updated = await getUser(phone);
+  await finishOnboarding(phone, bvn, name, customerId, updated);
+}
+
+async function finishOnboarding(phone, bvn, name, customerId, user) {
+  await reply(phone, `✅ Identity confirmed! Welcome, *${name}*!\n\n🏗️ Creating your FanBank virtual account...`, user);
+
+  let accountNumber = null;
+  let accountId = null;
+
+  if (customerId) {
+    const acct = await anchorCreateVirtualAccount(customerId);
+    if (acct) {
+      accountNumber = acct.accountNumber;
+      accountId = acct.accountId;
+    }
+  }
+
+  await upsertUser(phone, {
+    name,
+    anchor_customer_id: customerId,
+    anchor_account_id: accountId,
+    account_number: accountNumber,
+    state: 'SETTING_PIN',
+  });
+
+  const updated = await getUser(phone);
+  await reply(
+    phone,
+    `🎉 Account ready!\n\n💳 Account Number: *${accountNumber || 'Pending'}*\n🏦 Bank: FanBank (powered by Anchor)\n\nNow choose your *4-digit banter code* 🔐\n_(This PIN protects every transfer)_`,
+    updated
   );
 }
 
-async function selectClub(phone, choice) {
-  const user = await getUser(phone);
-  const club = CLUBS[choice];
-  user.club = club.name;
-  user.clubData = club;
-  user.state = 'AWAITING_NAME';
-  await saveUser(phone, user);
-  await sendMessage(phone, `${club.colors} Correct choice! ${club.name} fan forever! 🔥\n\nWhat's your full name?`);
-}
+// ─── Balance ──────────────────────────────────────────────────────────────────
 
 async function showBalance(phone) {
-  const user = await getUser(phone);
-  const colors = getClubColors(user.club);
+  const user = await ensureUser(phone);
+  const colors = user.club_data?.colors || '🏦';
   const club = user.club ? `${user.club} fan` : 'FanBank member';
-  await sendMessage(
+  await reply(
     phone,
-    `${colors} *FanBank Wallet — ${club}*\n\n` +
-    `💰 Wallet Balance: ₦${user.balance.toLocaleString()}\n` +
-    `🐷 FanSave Pot: ₦${user.fansave.toLocaleString()}\n` +
-    `⚡ XP: ${user.xp}\n` +
-    `🔥 Streak: ${user.streak} days\n` +
-    `🏅 Rank: ${user.rank}` +
-    (user.anchorAccountNumber ? `\n\n🏦 Account: ${user.anchorAccountNumber} (${user.anchorBankName})` : '')
+    `*FanBank Wallet — ${club}*\n\n💰 Wallet Balance: ₦${Number(user.balance).toLocaleString()}\n🐷 FanSave Pot: ₦${Number(user.fansave).toLocaleString()}\n⚡ XP: ${user.xp}\n🔥 Streak: ${user.streak} days\n🏅 Rank: ${user.rank}${user.account_number ? `\n\n💳 Account: ${user.account_number}` : ''}`,
+    user
   );
 }
+
+// ─── Transfer flow ────────────────────────────────────────────────────────────
 
 async function executeTransfer(phone, raw) {
   const user = await getUser(phone);
   const parts = raw.split('|').map((p) => p.trim());
   if (parts.length < 3) {
-    await sendMessage(phone, 'Format no correct o! Send like this:\n\nAMOUNT | ACCOUNT_NUMBER | BANK_NAME\n\nExample: 5000 | 0123456789 | GTBank');
+    await reply(phone, 'Format no correct o! Send like this:\n\nAMOUNT | ACCOUNT_NUMBER | BANK_NAME\n\nExample: 5000 | 0123456789 | GTBank', user);
     return;
   }
   const [amountStr, accountNumber, bankName] = parts;
-  const amount = parseAmount(amountStr);
+
+  const cleanAmount = amountStr.toLowerCase().replace(/,/g, '');
+  const amount = cleanAmount.endsWith('k') ? parseFloat(cleanAmount) * 1000 : parseFloat(cleanAmount);
 
   if (isNaN(amount) || amount <= 0) {
-    await sendMessage(phone, 'Amount no valid o! Enter correct number abeg. (e.g. 5000 or 5k)');
+    await reply(phone, 'Amount no valid o! Enter correct number abeg.', user);
     return;
   }
   if (!/^\d{10}$/.test(accountNumber)) {
-    await sendMessage(phone, 'Account number must be exactly 10 digits! Check and try again.');
+    await reply(phone, 'Account number must be exactly 10 digits!', user);
     return;
   }
-
-  user.pendingTransfer = { amount, accountNumber, bankName };
-  user.state = 'AWAITING_VOICE';
-  await saveUser(phone, user);
-  await sendMessage(phone, '🎙️ Before I send, record a short BANTER voice note for the receiver!\n\nSend it now — or type *SKIP* to send without voice banter.');
+  await upsertUser(phone, {
+    pending_transfer: { amount, accountNumber, bankName },
+    state: 'AWAITING_PIN',
+  });
+  const updated = await getUser(phone);
+  await reply(phone, `💸 Sending ₦${amount.toLocaleString()} to ${accountNumber} (${bankName})\n\n🔐 Drop your banter code to confirm:`, updated);
 }
 
 async function completePendingTransfer(phone, audioId) {
   const user = await getUser(phone);
-  const { amount, accountNumber, bankName } = user.pendingTransfer;
-
-  user.state = null;
-  user.pendingTransfer = null;
-  await saveUser(phone, user);
-
+  const { amount, accountNumber, bankName } = user.pending_transfer;
+  await upsertUser(phone, { state: null, pending_transfer: null });
   const result = await anchorTransfer(amount, accountNumber, bankName);
-
+  const updated = await getUser(phone);
   if (result.success) {
-    user.balance = Math.max(0, user.balance - amount);
-    user.xp += 50;
-    await saveUser(phone, user);
-
-    const colors = getClubColors(user.club);
-    const banter = await claudeGenerateBanterReceipt(user.club, user.clubData, amount, accountNumber, bankName);
-
-    if (audioId) {
-      const receiver = process.env.RECEIVER_PHONE;
-      if (receiver) {
-        console.log(`[AUDIO] Forwarding voice note audioId=${audioId} to ${receiver}`);
-        await sendAudio(receiver, audioId);
-      }
-    }
-
-    await sendMessage(
+    const newBal = Math.max(0, Number(updated.balance) - amount);
+    await upsertUser(phone, { balance: newBal, xp: updated.xp + 50 });
+    const finalUser = await getUser(phone);
+    const banter = await claudeGenerateBanterReceipt(updated.club, updated.club_data, amount, accountNumber, bankName);
+    await reply(
       phone,
-      `${colors} *Transfer Successful!*\n\n` +
-      `Amount: ₦${amount.toLocaleString()}\n` +
-      `Account: ${accountNumber}\n` +
-      `Bank: ${bankName}\n\n` +
-      `🎭 *Banter Receipt:*\n${banter}\n\n` +
-      `+50 XP earned!${audioId ? '\n\n🎙️ Your banter voice note don land for the receiver!' : ''}`
+      `*Transfer Successful!*\n\nAmount: ₦${amount.toLocaleString()}\nAccount: ${accountNumber}\nBank: ${bankName}\n\n🎭 *Banter Receipt:*\n${banter}\n\n+50 XP earned! Na you baddest! 🔥`,
+      finalUser
     );
+    if (audioId) {
+      await forwardAudio(accountNumber, audioId);
+      await sendMessage(phone, '✅ Savage voice note forwarded! They go hear am! 😂');
+    }
   } else {
-    await sendMessage(phone, 'Transfer failed! Something went wrong. Please try again.');
+    await reply(phone, 'Transfer failed! Try again.', updated);
   }
 }
+
+// ─── Airtime flow ─────────────────────────────────────────────────────────────
 
 async function executeAirtime(phone, raw) {
   const user = await getUser(phone);
   const parts = raw.split('|').map((p) => p.trim());
   if (parts.length < 2) {
-    await sendMessage(phone, 'Format no correct! Send like this:\n\nPHONE_NUMBER | AMOUNT\n\nExample: 08012345678 | 500');
+    await reply(phone, 'Format no correct! Send like this:\n\nPHONE_NUMBER | AMOUNT\n\nExample: 08012345678 | 500', user);
     return;
   }
   const [airtimePhone, amountStr] = parts;
-  const amount = parseAmount(amountStr);
+  const cleanAmount = amountStr.toLowerCase().replace(/,/g, '');
+  const amount = cleanAmount.endsWith('k') ? parseFloat(cleanAmount) * 1000 : parseFloat(cleanAmount);
 
   if (!/^\d{11}$/.test(airtimePhone)) {
-    await sendMessage(phone, 'Phone number must be 11 digits! Check and try again.');
+    await reply(phone, 'Phone number must be 11 digits! Check and try again.', user);
     return;
   }
   if (isNaN(amount) || amount <= 0) {
-    await sendMessage(phone, 'Amount no valid! Enter correct number abeg.');
+    await reply(phone, 'Amount no valid! Enter correct number abeg.', user);
     return;
   }
 
-  user.state = null;
-  await saveUser(phone, user);
-
+  await upsertUser(phone, { state: null });
   const result = await vtpassAirtime(airtimePhone, amount);
   if (result.success) {
-    user.balance = Math.max(0, user.balance - amount);
-    user.xp += 20;
-    await saveUser(phone, user);
-    const colors = getClubColors(user.club);
-    await sendMessage(
-      phone,
-      `${colors} *Airtime Sent!*\n\nPhone: ${airtimePhone}\nAmount: ₦${amount.toLocaleString()}\n\n+20 XP earned! Na you baddest!`
-    );
+    const newBal = Math.max(0, Number(user.balance) - amount);
+    await upsertUser(phone, { balance: newBal, xp: user.xp + 20 });
+    const updated = await getUser(phone);
+    await reply(phone, `*Airtime Sent!*\n\nPhone: ${airtimePhone}\nAmount: ₦${amount.toLocaleString()}\n\n+20 XP earned! Na you baddest!`, updated);
   } else {
-    await sendMessage(phone, 'Airtime purchase failed! Try again or contact support.');
+    await reply(phone, 'Airtime purchase failed! Try again or contact support.', user);
   }
 }
 
-// ─── Main message handler ────────────────────────────────────────────────────
+// ─── Main message handler ─────────────────────────────────────────────────────
 
-async function handleMessage(phone, messageType, text, audioId, messageId) {
-  const user = await getUser(phone);
-
+async function handleMessage(phone, text, messageId, messageType, audioId, interactiveReply) {
   await sendTyping(phone, messageId);
 
-  // ── AWAITING_VOICE: user should send voice note or SKIP ──
-  if (user.state === 'AWAITING_VOICE') {
-    if (messageType === 'audio' && audioId) return completePendingTransfer(phone, audioId);
-    if (messageType === 'text' && text?.toLowerCase().trim() === 'skip') return completePendingTransfer(phone, null);
-    return sendMessage(phone, '🎙️ Send a voice note for the receiver or type *SKIP* to send without banter.');
+  const lower = (text || '').toLowerCase().trim();
+
+  // ── Onboarding trigger ──
+  if (lower === 'hi' || lower === 'hello' || lower === 'start' || lower === 'howfar') {
+    return showWelcome(phone);
   }
 
-  // ── AWAITING_NAME: collect full name after club selection ──
-  if (user.state === 'AWAITING_NAME') {
-    if (messageType !== 'text' || !text) return sendMessage(phone, 'Please type your full name.');
-    user.name = text.trim();
-    user.state = 'AWAITING_BVN';
-    await saveUser(phone, user);
-    await sendMessage(phone, `Nice one, ${user.name}! 🎉\n\nNow enter your *BVN* to set up your FanBank virtual account:`);
-    return;
+  // ── Interactive list reply (club selection) ──
+  if (interactiveReply?.type === 'list_reply') {
+    const rowId = interactiveReply.list_reply?.id || '';
+    const match = rowId.match(/^club_([1-6])$/);
+    if (match) return handleClubSelection(phone, match[1]);
   }
 
-  // ── AWAITING_BVN: validate BVN, create Anchor account, send welcome image ──
-  if (user.state === 'AWAITING_BVN') {
-    if (messageType !== 'text' || !text) return sendMessage(phone, 'Please enter your 11-digit BVN.');
-    const bvn = text.trim();
-    if (!/^\d{11}$/.test(bvn)) {
-      await sendMessage(phone, 'BVN must be exactly 11 digits! Check and try again.');
+  // ── Interactive button reply ──
+  if (interactiveReply?.type === 'button_reply') {
+    const btnId = interactiveReply.button_reply?.id || '';
+    if (btnId === 'BAL' || lower === 'bal' || lower === 'balance') return showBalance(phone);
+    if (btnId === 'SEND') {
+      const user = await ensureUser(phone);
+      await upsertUser(phone, { state: 'TRANSFER' });
+      return reply(phone, 'Who you wan send money to?\n\nReply with:\nAMOUNT | ACCOUNT_NUMBER | BANK_NAME\n\nExample:\n5000 | 0123456789 | GTBank', user);
+    }
+    if (btnId === 'FUND') {
+      const user = await ensureUser(phone);
+      return reply(phone, `💳 Fund your FanBank wallet:\n\nAccount Number: *${user.account_number || 'Pending setup'}*\nBank: FanBank (Anchor)\n\nSend any amount to this account to top up!`, user);
+    }
+  }
+
+  // Legacy numeric club pick (plain text "1"–"6")
+  if (/^[1-6]$/.test(lower) && CLUBS[lower]) {
+    const user = await getUser(phone);
+    if (!user?.club) return handleClubSelection(phone, lower);
+  }
+
+  const user = await ensureUser(phone);
+
+  // ── State machine ──
+  if (user.state === 'AWAITING_BVN') return handleBVN(phone, text || '');
+  if (user.state === 'AWAITING_NIN') return handleNIN(phone, text || '');
+  if (user.state === 'AWAITING_NAME') return handleManualName(phone, text || '');
+
+  if (user.state === 'SETTING_PIN') {
+    if (!/^\d{4}$/.test((text || '').trim())) {
+      await reply(phone, '❌ Must be exactly 4 digits! Try again:', user);
       return;
     }
-
-    await sendMessage(phone, '⏳ Setting up your FanBank account, hold on...');
-
-    try {
-      const { customerId, accountNumber, bankName } = await createAnchorAccount(user.name, bvn);
-
-      user.anchorCustomerId = customerId;
-      user.anchorAccountNumber = accountNumber;
-      user.anchorBankName = bankName;
-      user.state = null;
-      await saveUser(phone, user);
-
-      await sendMessage(
-        phone,
-        `🎉 *Your FanBank Account is Ready!*\n\n` +
-        `🏦 Bank: ${bankName}\n` +
-        `💳 Account Number: ${accountNumber}\n` +
-        `👤 Name: ${user.name}\n\n` +
-        `You are now a certified ${user.club} legend on FanBank!\n\n` +
-        `Type BAL to see your wallet, SEND to transfer, BUY AIRTIME for airtime.`
-      );
-
-      try {
-        const imageBuffer = await generateWelcomeImage(user.name, accountNumber, user.club);
-        await sendImageBuffer(phone, imageBuffer, `Welcome to FanBank, ${user.name}! 🎉`);
-      } catch (imgErr) {
-        console.error('Welcome image error:', imgErr.message);
-      }
-
-    } catch (err) {
-      console.error('Anchor account creation error:', err?.response?.data || err.message);
-      user.state = null;
-      await saveUser(phone, user);
-      await sendMessage(phone, 'Account setup failed! Please try again later or contact support.');
-    }
+    await upsertUser(phone, { pin: text.trim(), state: 'DONE' });
+    const updated = await getUser(phone);
+    await sendWelcomeFlier(phone, updated);
+    await reply(
+      phone,
+      `✅ Banter code set! You are ready to flex! 🔥\n\nType *BAL* for balance\nType *SEND* to transfer\nType *BUY AIRTIME* for airtime`,
+      updated
+    );
     return;
   }
 
-  if (messageType !== 'text' || !text) return;
+  if (user.state === 'AWAITING_PIN') {
+    if (!/^\d{4}$/.test((text || '').trim())) {
+      await reply(phone, '❌ Invalid code! Enter your 4-digit banter code:', user);
+      return;
+    }
+    if (!user.pin) {
+      await upsertUser(phone, { state: null, pending_transfer: null });
+      await reply(phone, '❌ You have no PIN set. Type SETPIN to create one.', user);
+      return;
+    }
+    if (text.trim() !== user.pin) {
+      await reply(phone, '❌ Wrong banter code! Try again:', user);
+      return;
+    }
+    await upsertUser(phone, { state: 'AWAITING_VOICE' });
+    const updated = await getUser(phone);
+    await reply(phone, '🎙️ PIN confirmed! Now record a savage voice note for the receiver — or type SKIP to send without banter.', updated);
+    return;
+  }
 
-  const lower = text.toLowerCase().trim();
+  if (user.state === 'AWAITING_VOICE') {
+    if (messageType === 'audio' && audioId) return completePendingTransfer(phone, audioId);
+    if (lower === 'skip') return completePendingTransfer(phone, null);
+    await reply(phone, '🎙️ Send a voice note or type SKIP.', user);
+    return;
+  }
 
-  if (lower === 'hi' || lower === 'hello' || lower === 'start' || lower === 'howfar') return showWelcome(phone);
-  if (/^[1-6]$/.test(lower) && CLUBS[lower]) return selectClub(phone, lower);
+  if (lower === 'setpin') {
+    await upsertUser(phone, { state: 'SETTING_PIN' });
+    await reply(phone, '🔐 Choose your 4-digit banter code:', user);
+    return;
+  }
+
+  if (user.state === 'TRANSFER' && text && /\|/.test(text)) return executeTransfer(phone, text);
+  if (user.state === 'AIRTIME' && text && /\|/.test(text)) return executeAirtime(phone, text);
+
   if (lower === 'bal' || lower === 'balance') return showBalance(phone);
 
   if (lower.includes('send') || lower.includes('transfer')) {
-    user.state = 'TRANSFER';
-    await saveUser(phone, user);
-    return sendMessage(phone, 'Okay! Who you wan send money to?\n\nReply with:\nAMOUNT | ACCOUNT_NUMBER | BANK_NAME\n\nExample:\n5000 | 0123456789 | GTBank\nor\n5k | 0123456789 | GTBank');
+    await upsertUser(phone, { state: 'TRANSFER' });
+    return reply(phone, 'Okay! Who you wan send money to?\n\nReply with:\nAMOUNT | ACCOUNT_NUMBER | BANK_NAME\n\nExample:\n5000 | 0123456789 | GTBank', user);
   }
 
-  if (lower.includes('buy airtime')) {
-    user.state = 'AIRTIME';
-    await saveUser(phone, user);
-    return sendMessage(phone, 'No wahala! Which number and how much?\n\nReply with:\nPHONE_NUMBER | AMOUNT\n\nExample:\n08012345678 | 500');
+  if (lower.includes('buy airtime') || lower.includes('airtime')) {
+    await upsertUser(phone, { state: 'AIRTIME' });
+    return reply(phone, 'No wahala! Which number and how much?\n\nReply with:\nPHONE_NUMBER | AMOUNT\n\nExample:\n08012345678 | 500', user);
   }
 
-  if (user.state === 'TRANSFER' && /\|/.test(text)) return executeTransfer(phone, text);
-  if (user.state === 'AIRTIME' && /\|/.test(text)) return executeAirtime(phone, text);
+  if (lower === 'fund' || lower.includes('fund wallet') || lower.includes('top up')) {
+    return reply(phone, `💳 Fund your FanBank wallet:\n\nAccount Number: *${user.account_number || 'Pending setup'}*\nBank: FanBank (Anchor)\n\nSend any amount to this account to top up!`, user);
+  }
 
   return claudeRespond(phone, text);
 }
 
-// ─── Routes ──────────────────────────────────────────────────────────────────
+// ─── Routes ───────────────────────────────────────────────────────────────────
 
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
@@ -624,7 +793,6 @@ app.get('/webhook', (req, res) => {
 
 app.post('/webhook', async (req, res) => {
   console.log('[WEBHOOK POST] Full body:', JSON.stringify(req.body, null, 2));
-
   res.sendStatus(200);
 
   try {
@@ -638,26 +806,27 @@ app.post('/webhook', async (req, res) => {
     if (!message) return;
 
     const from = message.from;
-    const messageId = message.id;
     const messageType = message.type;
-    let text = message?.text?.body || null;
-    if (message.type === 'interactive') {
-      text = message?.interactive?.button_reply?.title ||
-             message?.interactive?.list_reply?.title || null;
-      if (text) text = text.replace(/[^\w\s]/gi, '').trim();
-    }
+    const text = message?.text?.body || null;
     const audioId = message?.audio?.id || null;
+    const messageId = message.id;
+
+    // Interactive replies (list selections, button taps)
+    const interactiveReply = message?.interactive
+      ? { type: message.interactive.type, list_reply: message.interactive.list_reply, button_reply: message.interactive.button_reply }
+      : null;
 
     if (!from) return;
+    if (!text && messageType !== 'audio' && !interactiveReply) return;
 
-    console.log(`[MSG] from=${from} type=${messageType} text="${text}" audioId=${audioId}`);
-    await handleMessage(from, messageType, text, audioId, messageId);
+    console.log(`[MSG] from=${from} type=${messageType} text="${text}"`);
+    await handleMessage(from, text, messageId, messageType, audioId, interactiveReply);
   } catch (err) {
     console.error('POST /webhook error:', err.message);
   }
 });
 
-// ─── Start ───────────────────────────────────────────────────────────────────
+// ─── Start ────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`FanBank webhook server running on port ${PORT}`);
