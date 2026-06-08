@@ -1,8 +1,8 @@
 const express = require('express');
 const axios = require('axios');
 const Anthropic = require('@anthropic-ai/sdk');
-const { createClient } = require('@supabase/supabase-js');
-const sharp = require('sharp');
+const { Pool } = require('pg');
+const Jimp = require('jimp');
 
 const app = express();
 app.use(express.json());
@@ -14,13 +14,35 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// Supabase — use service role key so RLS doesn't block server writes
-const supabase = createClient(
-  process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
-);
+// ─── PostgreSQL ────────────────────────────────────────────────────────────────
 
-// ─── Club config ──────────────────────────────────────────────────────────────
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fanbank_users (
+      phone              TEXT PRIMARY KEY,
+      name               TEXT,
+      club               TEXT,
+      club_data          JSONB,
+      balance            NUMERIC DEFAULT 5000,
+      fansave            NUMERIC DEFAULT 1200,
+      xp                 INTEGER DEFAULT 0,
+      streak             INTEGER DEFAULT 0,
+      rank               TEXT DEFAULT 'Bronze Banter',
+      pin                TEXT,
+      state              TEXT,
+      pending_transfer   JSONB,
+      account_number     TEXT,
+      bank_name          TEXT,
+      bvn                TEXT
+    )
+  `);
+  console.log('DB ready');
+}
+initDB().catch(err => console.error('DB init error:', err.message));
+
+// ─── Club config ───────────────────────────────────────────────────────────────
 
 const CLUBS = {
   '1': { name: 'Arsenal',    emoji: '🔴', colors: '🔴⚪', rival: 'Tottenham'  },
@@ -31,33 +53,46 @@ const CLUBS = {
   '6': { name: 'Real Madrid',emoji: '⚪', colors: '⚪🟡', rival: 'Barcelona'  },
 };
 
-// hex accent for each club (used in welcome flier)
 const CLUB_HEX = {
-  'Arsenal':    { bg: '#EF0107', text: '#FFFFFF' },
-  'Chelsea':    { bg: '#034694', text: '#FFFFFF' },
-  'Man United': { bg: '#DA291C', text: '#000000' },
-  'Liverpool':  { bg: '#C8102E', text: '#FFFFFF' },
-  'Barcelona':  { bg: '#A50044', text: '#FFED00' },
-  'Real Madrid':{ bg: '#FEBE10', text: '#00529F' },
+  'Arsenal':    '#DB0007',
+  'Chelsea':    '#034694',
+  'Man United': '#DA291C',
+  'Liverpool':  '#C8102E',
+  'Barcelona':  '#A50044',
+  'Real Madrid':'#FEBE10',
 };
 
-// ─── DB helpers ───────────────────────────────────────────────────────────────
+// ─── DB helpers ────────────────────────────────────────────────────────────────
 
 async function getUser(phone) {
-  const { data, error } = await supabase
-    .from('fanbank_users')
-    .select('*')
-    .eq('phone', phone)
-    .maybeSingle();
-  if (error) console.error('getUser error:', error.message);
-  return data;
+  try {
+    const { rows } = await pool.query('SELECT * FROM fanbank_users WHERE phone = $1', [phone]);
+    return rows[0] || null;
+  } catch (err) {
+    console.error('getUser error:', err.message);
+    return null;
+  }
 }
 
 async function upsertUser(phone, fields) {
-  const { error } = await supabase
-    .from('fanbank_users')
-    .upsert({ phone, ...fields, updated_at: new Date().toISOString() }, { onConflict: 'phone' });
-  if (error) console.error('upsertUser error:', error.message);
+  try {
+    const keys = Object.keys(fields);
+    if (!keys.length) return;
+    const values = [phone, ...Object.values(fields).map(v =>
+      (v !== null && v !== undefined && typeof v === 'object') ? JSON.stringify(v) : v
+    )];
+    const cols = keys.join(', ');
+    const insertPH = keys.map((_, i) => `$${i + 2}`).join(', ');
+    const setClauses = keys.map((k, i) => `${k} = $${i + 2}`).join(', ');
+    await pool.query(
+      `INSERT INTO fanbank_users (phone, ${cols})
+       VALUES ($1, ${insertPH})
+       ON CONFLICT (phone) DO UPDATE SET ${setClauses}`,
+      values
+    );
+  } catch (err) {
+    console.error('upsertUser error:', err.message);
+  }
 }
 
 async function ensureUser(phone) {
@@ -66,8 +101,8 @@ async function ensureUser(phone) {
     await upsertUser(phone, {
       balance: 5000,
       fansave: 1200,
-      xp: 450,
-      streak: 3,
+      xp: 0,
+      streak: 0,
       rank: 'Bronze Banter',
       state: null,
       pending_transfer: null,
@@ -78,7 +113,7 @@ async function ensureUser(phone) {
   return user;
 }
 
-// ─── Anchor bank codes ────────────────────────────────────────────────────────
+// ─── Anchor bank codes ─────────────────────────────────────────────────────────
 
 const BANK_CODES = {
   'opay': '100004',
@@ -98,7 +133,7 @@ const BANK_CODES = {
   'fidelity': '000007',
 };
 
-// ─── Anchor API helpers ───────────────────────────────────────────────────────
+// ─── Anchor API helpers ────────────────────────────────────────────────────────
 
 const ANCHOR_BASE = 'https://api.sandbox.getanchor.co/api/v1';
 const anchorHeaders = {
@@ -125,15 +160,13 @@ async function anchorLookupBVN(bvn) {
 }
 
 async function anchorCreateCustomer(fullName, bvn) {
-  const [firstName, ...rest] = fullName.trim().split(' ');
-  const lastName = rest.join(' ') || firstName;
   try {
     const res = await axios.post(
       `${ANCHOR_BASE}/customers`,
       {
         data: {
           type: 'IndividualCustomer',
-          attributes: { firstName, lastName, bvn: bvn || '00000000000' },
+          attributes: { fullName, bvn: bvn || '00000000000' },
         },
       },
       { headers: anchorHeaders }
@@ -148,7 +181,7 @@ async function anchorCreateCustomer(fullName, bvn) {
 async function anchorCreateVirtualAccount(customerId) {
   try {
     const res = await axios.post(
-      `${ANCHOR_BASE}/accounts`,
+      `${ANCHOR_BASE}/deposit-accounts`,
       {
         data: {
           type: 'DepositAccount',
@@ -164,6 +197,7 @@ async function anchorCreateVirtualAccount(customerId) {
     return {
       accountId: acct?.id,
       accountNumber: acct?.attributes?.accountNumber,
+      bankName: acct?.attributes?.bankName || acct?.attributes?.bank?.name || 'Anchor MFB',
     };
   } catch (err) {
     console.error('anchorCreateVirtualAccount error:', err?.response?.data || err.message);
@@ -218,14 +252,14 @@ async function anchorTransfer(amount, accountNumber, bankName) {
   }
 }
 
-// ─── VTPass placeholder ───────────────────────────────────────────────────────
+// ─── VTPass placeholder ────────────────────────────────────────────────────────
 
 async function vtpassAirtime(phone, amount) {
   console.log(`[VTPass] Airtime ₦${amount} to ${phone}`);
   return { success: true };
 }
 
-// ─── Claude helpers ───────────────────────────────────────────────────────────
+// ─── Claude helpers ────────────────────────────────────────────────────────────
 
 async function claudeGenerateBanterReceipt(senderClub, clubData, amount, accountNumber, bankName) {
   const rival = clubData?.rival || 'their rival';
@@ -255,7 +289,7 @@ async function claudeRespond(phone, text) {
   await sendMessage(phone, msg.content[0].text);
 }
 
-// ─── WhatsApp send helpers ────────────────────────────────────────────────────
+// ─── WhatsApp send helpers ─────────────────────────────────────────────────────
 
 async function sendTyping(to, messageId) {
   try {
@@ -286,7 +320,6 @@ async function sendMessage(to, text) {
   }
 }
 
-// Prefix every outgoing message with the user's club colors
 async function sendClubMessage(to, text, user) {
   const colors = user?.club_data?.colors || user?.clubData?.colors || '🏦';
   await sendMessage(to, `${colors} ${text}`);
@@ -305,9 +338,9 @@ async function sendQuickReplies(to) {
           body: { text: 'Quick actions:' },
           action: {
             buttons: [
-              { type: 'reply', reply: { id: 'FUND',  title: '💰 FUND' } },
-              { type: 'reply', reply: { id: 'SEND',  title: '💸 SEND' } },
-              { type: 'reply', reply: { id: 'BAL',   title: '📊 BAL'  } },
+              { type: 'reply', reply: { id: 'FUND', title: '💰 FUND' } },
+              { type: 'reply', reply: { id: 'SEND', title: '💸 SEND' } },
+              { type: 'reply', reply: { id: 'BAL',  title: '📊 BAL'  } },
             ],
           },
         },
@@ -319,7 +352,6 @@ async function sendQuickReplies(to) {
   }
 }
 
-// Send text then quick-reply buttons
 async function reply(to, text, user) {
   await sendClubMessage(to, text, user);
   await sendQuickReplies(to);
@@ -342,17 +374,17 @@ async function sendInteractiveList(to) {
               {
                 title: 'Premier League',
                 rows: [
-                  { id: 'club_1', title: '🔴⚪ Arsenal',    description: 'The Gunners' },
-                  { id: 'club_2', title: '🔵⚪ Chelsea',    description: 'The Blues' },
-                  { id: 'club_3', title: '🔴⚫ Man United', description: 'The Red Devils' },
-                  { id: 'club_4', title: '🔴⚪ Liverpool',  description: 'The Reds' },
+                  { id: 'club_1', title: '🔴⚪ Arsenal',    description: 'The Gunners'    },
+                  { id: 'club_2', title: '🔵⚪ Chelsea',    description: 'The Blues'       },
+                  { id: 'club_3', title: '🔴⚫ Man United', description: 'The Red Devils'  },
+                  { id: 'club_4', title: '🔴⚪ Liverpool',  description: 'The Reds'        },
                 ],
               },
               {
                 title: 'La Liga',
                 rows: [
-                  { id: 'club_5', title: '🔵🔴 Barcelona',   description: 'Blaugrana' },
-                  { id: 'club_6', title: '⚪🟡 Real Madrid', description: 'Los Blancos' },
+                  { id: 'club_5', title: '🔵🔴 Barcelona',   description: 'Blaugrana'    },
+                  { id: 'club_6', title: '⚪🟡 Real Madrid', description: 'Los Blancos'  },
                 ],
               },
             ],
@@ -378,47 +410,42 @@ async function forwardAudio(to, audioId) {
   }
 }
 
-// ─── Welcome flier (Sharp) ────────────────────────────────────────────────────
+// ─── Welcome flier (Jimp) ──────────────────────────────────────────────────────
+
+function hexToJimpColor(hex) {
+  const clean = hex.replace('#', '');
+  return parseInt(clean + 'FF', 16);
+}
 
 async function generateWelcomeFlier(user) {
   const clubName = user.club || 'FanBank';
-  const theme = CLUB_HEX[clubName] || { bg: '#1a1a2e', text: '#ffffff' };
+  const bgHex = CLUB_HEX[clubName] || '#1a1a2e';
+  const bgColor = hexToJimpColor(bgHex);
   const name = user.name || 'Fan';
-  const acctNum = user.account_number || '—';
-  const emoji = user.club_data?.emoji || '🏦';
+  const acctNum = user.account_number || 'Pending';
+  const bankNameVal = user.bank_name || 'FanBank';
 
-  const svg = `
-<svg width="800" height="450" xmlns="http://www.w3.org/2000/svg">
-  <rect width="800" height="450" fill="${theme.bg}"/>
-  <rect x="0" y="0" width="800" height="8" fill="rgba(255,255,255,0.3)"/>
-  <rect x="0" y="442" width="800" height="8" fill="rgba(255,255,255,0.3)"/>
-  <text x="400" y="80" font-family="Arial Black,Arial,sans-serif" font-size="52" font-weight="900"
-        fill="${theme.text}" text-anchor="middle" letter-spacing="4">FanBank</text>
-  <text x="400" y="115" font-family="Arial,sans-serif" font-size="16"
-        fill="${theme.text}" text-anchor="middle" opacity="0.75">World's First Banter Neo Gaming Bank</text>
-  <text x="400" y="195" font-family="Arial,sans-serif" font-size="72" text-anchor="middle">${emoji}</text>
-  <text x="400" y="260" font-family="Arial Black,Arial,sans-serif" font-size="36" font-weight="900"
-        fill="${theme.text}" text-anchor="middle">${name}</text>
-  <text x="400" y="300" font-family="Arial,sans-serif" font-size="18"
-        fill="${theme.text}" text-anchor="middle" opacity="0.85">${clubName} Fan</text>
-  <rect x="150" y="325" width="500" height="2" fill="${theme.text}" opacity="0.3"/>
-  <text x="400" y="365" font-family="monospace,Arial,sans-serif" font-size="28" font-weight="700"
-        fill="${theme.text}" text-anchor="middle" letter-spacing="3">${acctNum}</text>
-  <text x="400" y="395" font-family="Arial,sans-serif" font-size="14"
-        fill="${theme.text}" text-anchor="middle" opacity="0.6">FanBank Virtual Account • Powered by Anchor</text>
-  <text x="400" y="430" font-family="Arial,sans-serif" font-size="12"
-        fill="${theme.text}" text-anchor="middle" opacity="0.5">fanbank.ng</text>
-</svg>`;
+  const image = await Jimp.create(800, 450, bgColor);
 
-  return sharp(Buffer.from(svg)).png().toBuffer();
+  const font64 = await Jimp.loadFont(Jimp.FONT_SANS_64_WHITE);
+  const font32 = await Jimp.loadFont(Jimp.FONT_SANS_32_WHITE);
+  const font16 = await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE);
+
+  image.print(font64, 0, 40,  { text: 'FanBank', alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 80);
+  image.print(font16, 0, 120, { text: "World's First Banter Neo Gaming Bank", alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 30);
+  image.print(font32, 0, 185, { text: name, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 50);
+  image.print(font16, 0, 245, { text: `${clubName} Fan`, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 30);
+  image.print(font32, 0, 300, { text: acctNum, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 50);
+  image.print(font16, 0, 360, { text: bankNameVal, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 30);
+  image.print(font16, 0, 410, { text: 'Powered by Anchor • fanbank.ng', alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 30);
+
+  return image.getBufferAsync(Jimp.MIME_PNG);
 }
 
 async function sendWelcomeFlier(phone, user) {
   try {
     const imgBuf = await generateWelcomeFlier(user);
-    const b64 = imgBuf.toString('base64');
 
-    // Upload image via WhatsApp media API
     const FormData = require('form-data');
     const form = new FormData();
     form.append('file', imgBuf, { filename: 'welcome.png', contentType: 'image/png' });
@@ -439,7 +466,10 @@ async function sendWelcomeFlier(phone, user) {
         messaging_product: 'whatsapp',
         to: phone,
         type: 'image',
-        image: { id: mediaId, caption: `${user.club_data?.colors || '🏦'} Welcome to FanBank, ${user.name}! Your account is ready. 🎉` },
+        image: {
+          id: mediaId,
+          caption: `${user.club_data?.colors || '🏦'} Welcome to FanBank, ${user.name}! Your account is ready. 🎉`,
+        },
       },
       { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } }
     );
@@ -448,7 +478,7 @@ async function sendWelcomeFlier(phone, user) {
   }
 }
 
-// ─── Onboarding flow ──────────────────────────────────────────────────────────
+// ─── Onboarding flow ───────────────────────────────────────────────────────────
 
 async function showWelcome(phone) {
   await sendMessage(
@@ -478,35 +508,21 @@ async function handleBVN(phone, bvnText) {
     return;
   }
 
+  await upsertUser(phone, { bvn });
   await reply(phone, '🔍 Verifying your BVN... one moment...', user);
 
   const lookup = await anchorLookupBVN(bvn);
   if (lookup) {
     await upsertUser(phone, {
       name: lookup.name,
-      anchor_customer_id: lookup.customerId,
       state: 'CREATING_ACCOUNT',
     });
     const updated = await getUser(phone);
     await finishOnboarding(phone, bvn, lookup.name, lookup.customerId, updated);
   } else {
-    await upsertUser(phone, { state: 'AWAITING_NIN', pending_transfer: { bvn } });
-    await reply(phone, '⚠️ BVN lookup failed. Enter your NIN as fallback (11 digits):', user);
+    await upsertUser(phone, { state: 'AWAITING_NAME', pending_transfer: { bvn } });
+    await reply(phone, '📝 BVN lookup pending. Enter your full name to continue:', user);
   }
-}
-
-async function handleNIN(phone, ninText) {
-  const nin = ninText.trim().replace(/\s/g, '');
-  const user = await getUser(phone);
-
-  if (!/^\d{11}$/.test(nin)) {
-    await reply(phone, '❌ NIN must be exactly 11 digits. Try again:', user);
-    return;
-  }
-
-  // NIN lookup not available in sandbox — fall through to manual name
-  await upsertUser(phone, { state: 'AWAITING_NAME' });
-  await reply(phone, '📝 Enter your full name to continue:', user);
 }
 
 async function handleManualName(phone, nameText) {
@@ -520,7 +536,6 @@ async function handleManualName(phone, nameText) {
   const customerId = await anchorCreateCustomer(name, bvn);
   await upsertUser(phone, {
     name,
-    anchor_customer_id: customerId,
     state: 'CREATING_ACCOUNT',
     pending_transfer: null,
   });
@@ -532,33 +547,32 @@ async function finishOnboarding(phone, bvn, name, customerId, user) {
   await reply(phone, `✅ Identity confirmed! Welcome, *${name}*!\n\n🏗️ Creating your FanBank virtual account...`, user);
 
   let accountNumber = null;
-  let accountId = null;
+  let bankName = 'Anchor MFB';
 
   if (customerId) {
     const acct = await anchorCreateVirtualAccount(customerId);
     if (acct) {
       accountNumber = acct.accountNumber;
-      accountId = acct.accountId;
+      bankName = acct.bankName || 'Anchor MFB';
     }
   }
 
   await upsertUser(phone, {
     name,
-    anchor_customer_id: customerId,
-    anchor_account_id: accountId,
     account_number: accountNumber,
+    bank_name: bankName,
     state: 'SETTING_PIN',
   });
 
   const updated = await getUser(phone);
   await reply(
     phone,
-    `🎉 Account ready!\n\n💳 Account Number: *${accountNumber || 'Pending'}*\n🏦 Bank: FanBank (powered by Anchor)\n\nNow choose your *4-digit banter code* 🔐\n_(This PIN protects every transfer)_`,
+    `🎉 Account ready!\n\n💳 Account Number: *${accountNumber || 'Pending'}*\n🏦 Bank: ${bankName}\n\nNow choose your *4-digit banter code* 🔐\n_(This PIN protects every transfer)_`,
     updated
   );
 }
 
-// ─── Balance ──────────────────────────────────────────────────────────────────
+// ─── Balance ───────────────────────────────────────────────────────────────────
 
 async function showBalance(phone) {
   const user = await ensureUser(phone);
@@ -566,12 +580,12 @@ async function showBalance(phone) {
   const club = user.club ? `${user.club} fan` : 'FanBank member';
   await reply(
     phone,
-    `*FanBank Wallet — ${club}*\n\n💰 Wallet Balance: ₦${Number(user.balance).toLocaleString()}\n🐷 FanSave Pot: ₦${Number(user.fansave).toLocaleString()}\n⚡ XP: ${user.xp}\n🔥 Streak: ${user.streak} days\n🏅 Rank: ${user.rank}${user.account_number ? `\n\n💳 Account: ${user.account_number}` : ''}`,
+    `*FanBank Wallet — ${club}*\n\n💰 Wallet Balance: ₦${Number(user.balance).toLocaleString()}\n🐷 FanSave Pot: ₦${Number(user.fansave).toLocaleString()}\n⚡ XP: ${user.xp}\n🔥 Streak: ${user.streak} days\n🏅 Rank: ${user.rank}${user.account_number ? `\n\n💳 Account: ${user.account_number}\n🏦 Bank: ${user.bank_name || 'FanBank'}` : ''}`,
     user
   );
 }
 
-// ─── Transfer flow ────────────────────────────────────────────────────────────
+// ─── Transfer flow ─────────────────────────────────────────────────────────────
 
 async function executeTransfer(phone, raw) {
   const user = await getUser(phone);
@@ -626,7 +640,7 @@ async function completePendingTransfer(phone, audioId) {
   }
 }
 
-// ─── Airtime flow ─────────────────────────────────────────────────────────────
+// ─── Airtime flow ──────────────────────────────────────────────────────────────
 
 async function executeAirtime(phone, raw) {
   const user = await getUser(phone);
@@ -660,26 +674,23 @@ async function executeAirtime(phone, raw) {
   }
 }
 
-// ─── Main message handler ─────────────────────────────────────────────────────
+// ─── Main message handler ──────────────────────────────────────────────────────
 
 async function handleMessage(phone, text, messageId, messageType, audioId, interactiveReply) {
   await sendTyping(phone, messageId);
 
   const lower = (text || '').toLowerCase().trim();
 
-  // ── Onboarding trigger ──
   if (lower === 'hi' || lower === 'hello' || lower === 'start' || lower === 'howfar') {
     return showWelcome(phone);
   }
 
-  // ── Interactive list reply (club selection) ──
   if (interactiveReply?.type === 'list_reply') {
     const rowId = interactiveReply.list_reply?.id || '';
     const match = rowId.match(/^club_([1-6])$/);
     if (match) return handleClubSelection(phone, match[1]);
   }
 
-  // ── Interactive button reply ──
   if (interactiveReply?.type === 'button_reply') {
     const btnId = interactiveReply.button_reply?.id || '';
     if (btnId === 'BAL' || lower === 'bal' || lower === 'balance') return showBalance(phone);
@@ -690,11 +701,10 @@ async function handleMessage(phone, text, messageId, messageType, audioId, inter
     }
     if (btnId === 'FUND') {
       const user = await ensureUser(phone);
-      return reply(phone, `💳 Fund your FanBank wallet:\n\nAccount Number: *${user.account_number || 'Pending setup'}*\nBank: FanBank (Anchor)\n\nSend any amount to this account to top up!`, user);
+      return reply(phone, `💳 Fund your FanBank wallet:\n\nAccount Number: *${user.account_number || 'Pending setup'}*\nBank: ${user.bank_name || 'FanBank (Anchor)'}\n\nSend any amount to this account to top up!`, user);
     }
   }
 
-  // Legacy numeric club pick (plain text "1"–"6")
   if (/^[1-6]$/.test(lower) && CLUBS[lower]) {
     const user = await getUser(phone);
     if (!user?.club) return handleClubSelection(phone, lower);
@@ -702,9 +712,7 @@ async function handleMessage(phone, text, messageId, messageType, audioId, inter
 
   const user = await ensureUser(phone);
 
-  // ── State machine ──
-  if (user.state === 'AWAITING_BVN') return handleBVN(phone, text || '');
-  if (user.state === 'AWAITING_NIN') return handleNIN(phone, text || '');
+  if (user.state === 'AWAITING_BVN')  return handleBVN(phone, text || '');
   if (user.state === 'AWAITING_NAME') return handleManualName(phone, text || '');
 
   if (user.state === 'SETTING_PIN') {
@@ -757,7 +765,7 @@ async function handleMessage(phone, text, messageId, messageType, audioId, inter
   }
 
   if (user.state === 'TRANSFER' && text && /\|/.test(text)) return executeTransfer(phone, text);
-  if (user.state === 'AIRTIME' && text && /\|/.test(text)) return executeAirtime(phone, text);
+  if (user.state === 'AIRTIME'  && text && /\|/.test(text)) return executeAirtime(phone, text);
 
   if (lower === 'bal' || lower === 'balance') return showBalance(phone);
 
@@ -772,13 +780,13 @@ async function handleMessage(phone, text, messageId, messageType, audioId, inter
   }
 
   if (lower === 'fund' || lower.includes('fund wallet') || lower.includes('top up')) {
-    return reply(phone, `💳 Fund your FanBank wallet:\n\nAccount Number: *${user.account_number || 'Pending setup'}*\nBank: FanBank (Anchor)\n\nSend any amount to this account to top up!`, user);
+    return reply(phone, `💳 Fund your FanBank wallet:\n\nAccount Number: *${user.account_number || 'Pending setup'}*\nBank: ${user.bank_name || 'FanBank (Anchor)'}\n\nSend any amount to this account to top up!`, user);
   }
 
   return claudeRespond(phone, text);
 }
 
-// ─── Routes ───────────────────────────────────────────────────────────────────
+// ─── Routes ────────────────────────────────────────────────────────────────────
 
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
@@ -798,14 +806,14 @@ app.post('/webhook', async (req, res) => {
   try {
     if (req.body?.object !== 'whatsapp_business_account') return;
 
-    const entry = req.body?.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
+    const entry   = req.body?.entry?.[0];
+    const change  = entry?.changes?.[0];
+    const value   = change?.value;
     const message = value?.messages?.[0];
 
     if (!message) return;
 
-    const from = message.from;
+    const from        = message.from;
     const messageType = message.type;
     let text = message?.text?.body || null;
     if (message.type === 'interactive') {
@@ -813,10 +821,9 @@ app.post('/webhook', async (req, res) => {
              message?.interactive?.list_reply?.title || null;
       if (text) text = text.replace(/[^\w\s]/gi, '').trim();
     }
-    const audioId = message?.audio?.id || null;
+    const audioId   = message?.audio?.id || null;
     const messageId = message.id;
 
-    // Interactive replies (list selections, button taps)
     const interactiveReply = message?.interactive
       ? { type: message.interactive.type, list_reply: message.interactive.list_reply, button_reply: message.interactive.button_reply }
       : null;
@@ -831,7 +838,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
+// ─── Start ─────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`FanBank webhook server running on port ${PORT}`);
