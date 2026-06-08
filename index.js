@@ -2,7 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const Anthropic = require('@anthropic-ai/sdk');
 const { Pool } = require('pg');
-const Jimp = require('jimp');
+let sharp; try { sharp = require('sharp'); } catch (e) { sharp = null; }
 
 const app = express();
 app.use(express.json());
@@ -410,41 +410,40 @@ async function forwardAudio(to, audioId) {
   }
 }
 
-// ─── Welcome flier (Jimp) ──────────────────────────────────────────────────────
-
-function hexToJimpColor(hex) {
-  const clean = hex.replace('#', '');
-  return parseInt(clean + 'FF', 16);
-}
+// ─── Welcome flier (sharp) ─────────────────────────────────────────────────────
 
 async function generateWelcomeFlier(user) {
-  const clubName = user.club || 'FanBank';
-  const bgHex = CLUB_HEX[clubName] || '#1a1a2e';
-  const bgColor = hexToJimpColor(bgHex);
-  const name = user.name || 'Fan';
-  const acctNum = user.account_number || 'Pending';
-  const bankNameVal = user.bank_name || 'FanBank';
+  try {
+    if (!sharp) throw new Error('sharp not available');
+    const clubName = user.club || 'FanBank';
+    const bgHex = CLUB_HEX[clubName] || '#1a1a2e';
+    const name = (user.name || 'Fan').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const acctNum = (user.account_number || 'Pending').replace(/&/g, '&amp;');
+    const bankNameVal = (user.bank_name || 'FanBank').replace(/&/g, '&amp;');
+    const clubLabel = clubName.replace(/&/g, '&amp;');
 
-  const image = await Jimp.create(800, 450, bgColor);
+    const svg = `<svg width="800" height="450" xmlns="http://www.w3.org/2000/svg">
+      <rect width="800" height="450" fill="${bgHex}"/>
+      <text x="400" y="90"  font-family="sans-serif" font-size="64" fill="white" text-anchor="middle" font-weight="bold">FanBank</text>
+      <text x="400" y="135" font-family="sans-serif" font-size="20" fill="white" text-anchor="middle">World's First Banter Neo Gaming Bank</text>
+      <text x="400" y="210" font-family="sans-serif" font-size="38" fill="white" text-anchor="middle">${name}</text>
+      <text x="400" y="265" font-family="sans-serif" font-size="22" fill="white" text-anchor="middle">${clubLabel} Fan</text>
+      <text x="400" y="330" font-family="sans-serif" font-size="38" fill="white" text-anchor="middle">${acctNum}</text>
+      <text x="400" y="380" font-family="sans-serif" font-size="22" fill="white" text-anchor="middle">${bankNameVal}</text>
+      <text x="400" y="430" font-family="sans-serif" font-size="18" fill="white" text-anchor="middle">Powered by Anchor • fanbank.ng</text>
+    </svg>`;
 
-  const font64 = await Jimp.loadFont(Jimp.FONT_SANS_64_WHITE);
-  const font32 = await Jimp.loadFont(Jimp.FONT_SANS_32_WHITE);
-  const font16 = await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE);
-
-  image.print(font64, 0, 40,  { text: 'FanBank', alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 80);
-  image.print(font16, 0, 120, { text: "World's First Banter Neo Gaming Bank", alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 30);
-  image.print(font32, 0, 185, { text: name, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 50);
-  image.print(font16, 0, 245, { text: `${clubName} Fan`, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 30);
-  image.print(font32, 0, 300, { text: acctNum, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 50);
-  image.print(font16, 0, 360, { text: bankNameVal, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 30);
-  image.print(font16, 0, 410, { text: 'Powered by Anchor • fanbank.ng', alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 800, 30);
-
-  return image.getBufferAsync(Jimp.MIME_PNG);
+    return await sharp(Buffer.from(svg)).png().toBuffer();
+  } catch (err) {
+    console.log('Image generation skipped:', err.message);
+    return null;
+  }
 }
 
 async function sendWelcomeFlier(phone, user) {
   try {
     const imgBuf = await generateWelcomeFlier(user);
+    if (!imgBuf) return;
 
     const FormData = require('form-data');
     const form = new FormData();
