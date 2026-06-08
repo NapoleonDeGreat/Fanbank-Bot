@@ -807,7 +807,12 @@ app.post('/webhook', async (req, res) => {
 
     const from = message.from;
     const messageType = message.type;
-    const text = message?.text?.body || null;
+    let text = message?.text?.body || null;
+    if (message.type === 'interactive') {
+      text = message?.interactive?.button_reply?.title ||
+             message?.interactive?.list_reply?.title || null;
+      if (text) text = text.replace(/[^\w\s]/gi, '').trim();
+    }
     const audioId = message?.audio?.id || null;
     const messageId = message.id;
 
