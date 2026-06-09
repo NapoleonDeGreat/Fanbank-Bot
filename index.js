@@ -145,20 +145,18 @@ const anchorHeaders = {
 async function anchorLookupBVN(bvn) {
   try {
     const res = await axios.get(`${ANCHOR_BASE}/customers?bvn=${bvn}`, { headers: anchorHeaders });
-    console.log('[Anchor] BVN lookup raw response:', JSON.stringify(res.data, null, 2));
     const customer = res.data?.data?.[0];
     if (customer) {
       const a = customer.attributes;
-      console.log('[Anchor] Customer attributes:', JSON.stringify(a, null, 2));
       // Anchor may return fullName (single field) or firstName+lastName depending on how customer was created
       const name = a.fullName || `${a.firstName || ''} ${a.lastName || ''}`.trim() || null;
-      console.log('[Anchor] Resolved customer name:', name, '| customerId:', customer.id);
+      console.log('[Anchor] BVN lookup: customer found | customerId:', customer.id, '| nameResolved:', !!name, '| nameSource:', a.fullName ? 'fullName' : 'firstName+lastName');
       return { name, customerId: customer.id };
     }
     console.log('[Anchor] BVN lookup: no existing customer found');
     return null;
   } catch (err) {
-    console.error('[Anchor] BVN lookup error:', err?.response?.data || err.message);
+    console.error('[Anchor] BVN lookup error — HTTP status:', err?.response?.status, '| code:', err?.response?.data?.errors?.[0]?.code || err.message);
     return null;
   }
 }
@@ -171,14 +169,12 @@ async function anchorCreateCustomer(fullName, bvn) {
         attributes: { fullName, bvn: bvn || '00000000000' },
       },
     };
-    console.log('[Anchor] createCustomer payload:', JSON.stringify(payload, null, 2));
     const res = await axios.post(`${ANCHOR_BASE}/customers`, payload, { headers: anchorHeaders });
-    console.log('[Anchor] createCustomer raw response:', JSON.stringify(res.data, null, 2));
     const customerId = res.data?.data?.id || null;
-    console.log('[Anchor] createCustomer resolved customerId:', customerId);
+    console.log('[Anchor] createCustomer — HTTP', res.status, '| customerId present:', !!customerId);
     return customerId;
   } catch (err) {
-    console.error('[Anchor] createCustomer error:', JSON.stringify(err?.response?.data, null, 2) || err.message);
+    console.error('[Anchor] createCustomer error — HTTP status:', err?.response?.status, '| code:', err?.response?.data?.errors?.[0]?.code || err.message);
     return null;
   }
 }
@@ -194,14 +190,15 @@ async function anchorCreateVirtualAccount(customerId) {
         },
       },
     };
-    console.log('[Anchor] createVirtualAccount payload:', JSON.stringify(payload, null, 2));
     const res = await axios.post(`${ANCHOR_BASE}/deposit-accounts`, payload, { headers: anchorHeaders });
-    console.log('[Anchor] createVirtualAccount raw response:', JSON.stringify(res.data, null, 2));
     const acct = res.data?.data;
     const attrs = acct?.attributes || {};
-    console.log('[Anchor] deposit account attributes:', JSON.stringify(attrs, null, 2));
 
     // Anchor may return the account number under several possible keys — try all of them
+    const accountNumberKey = ['accountNumber', 'account_number', 'number'].find(k => attrs[k]) ||
+      (['accountDetails.accountNumber', 'accountDetails.number'].find(k => {
+        const [p, c] = k.split('.'); return attrs[p]?.[c];
+      }));
     const accountNumber =
       attrs.accountNumber ||
       attrs.account_number ||
@@ -217,10 +214,10 @@ async function anchorCreateVirtualAccount(customerId) {
       attrs.accountDetails?.bankName ||
       'Anchor MFB';
 
-    console.log('[Anchor] Resolved accountNumber:', accountNumber, '| bankName:', bankName);
+    console.log('[Anchor] createVirtualAccount — HTTP', res.status, '| accountId:', acct?.id, '| accountNumberPresent:', !!accountNumber, '| accountNumberKey:', accountNumberKey || 'none', '| bankName:', bankName);
     return { accountId: acct?.id, accountNumber, bankName };
   } catch (err) {
-    console.error('[Anchor] createVirtualAccount error:', JSON.stringify(err?.response?.data, null, 2) || err.message);
+    console.error('[Anchor] createVirtualAccount error — HTTP status:', err?.response?.status, '| code:', err?.response?.data?.errors?.[0]?.code || err.message);
     return null;
   }
 }
@@ -275,7 +272,7 @@ async function anchorTransfer(amount, accountNumber, bankName) {
 // ─── VTPass placeholder ────────────────────────────────────────────────────────
 
 async function vtpassAirtime(phone, amount) {
-  console.log(`[VTPass] Airtime ₦${amount} to ${phone}`);
+  console.log(`[VTPass] Airtime ₦${amount} — stub`);
   return { success: true };
 }
 
@@ -570,9 +567,9 @@ async function handleManualName(phone, nameText) {
 }
 
 async function finishOnboarding(phone, bvn, name, customerId, user) {
-  console.log('[finishOnboarding] name:', name, '| customerId:', customerId);
+  console.log('[finishOnboarding] namePresent:', !!(name && name.trim()), '| customerIdPresent:', !!customerId);
 
-  // Guard: name must be a non-empty string — fall back to phone if something went wrong upstream
+  // Guard: name must be a non-empty string — fall back to 'Fan' if something went wrong upstream
   const displayName = (typeof name === 'string' && name.trim()) ? name.trim() : 'Fan';
 
   await reply(phone, `✅ Identity confirmed! Welcome, *${displayName}*!\n\n🏗️ Creating your FanBank virtual account...`, user);
@@ -582,16 +579,14 @@ async function finishOnboarding(phone, bvn, name, customerId, user) {
 
   if (customerId) {
     const acct = await anchorCreateVirtualAccount(customerId);
-    console.log('[finishOnboarding] anchorCreateVirtualAccount result:', JSON.stringify(acct, null, 2));
     if (acct) {
       accountNumber = acct.accountNumber;
       bankName = acct.bankName || 'Anchor MFB';
     }
+    console.log('[finishOnboarding] virtual account created | accountNumberPresent:', !!accountNumber, '| bankName:', bankName);
   } else {
     console.log('[finishOnboarding] No customerId — skipping virtual account creation');
   }
-
-  console.log('[finishOnboarding] Saving to DB — account_number:', accountNumber, '| bank_name:', bankName, '| name:', displayName);
 
   await upsertUser(phone, {
     name: displayName,
@@ -601,7 +596,7 @@ async function finishOnboarding(phone, bvn, name, customerId, user) {
   });
 
   const updated = await getUser(phone);
-  console.log('[finishOnboarding] DB record after save:', JSON.stringify({ name: updated.name, account_number: updated.account_number, bank_name: updated.bank_name }, null, 2));
+  console.log('[finishOnboarding] DB save complete | accountNumberSaved:', !!updated.account_number, '| nameSaved:', !!updated.name);
   await reply(
     phone,
     `🎉 Account ready!\n\n💳 Account Number: *${accountNumber || 'Pending'}*\n🏦 Bank: ${bankName}\n\nNow choose your *4-digit banter code* 🔐\n_(This PIN protects every transfer)_`,
@@ -837,7 +832,7 @@ app.get('/webhook', (req, res) => {
 });
 
 app.post('/webhook', async (req, res) => {
-  console.log('[WEBHOOK POST] Full body:', JSON.stringify(req.body, null, 2));
+  console.log('[WEBHOOK POST] received | object:', req.body?.object, '| entries:', req.body?.entry?.length);
   res.sendStatus(200);
 
   try {
@@ -868,7 +863,7 @@ app.post('/webhook', async (req, res) => {
     if (!from) return;
     if (!text && messageType !== 'audio' && !interactiveReply) return;
 
-    console.log(`[MSG] from=${from} type=${messageType} text="${text}"`);
+    console.log(`[MSG] type=${messageType} | textPresent=${!!text} | audioId=${!!audioId} | interactive=${!!interactiveReply}`);
     await handleMessage(from, text, messageId, messageType, audioId, interactiveReply);
   } catch (err) {
     console.error('POST /webhook error:', err.message);
