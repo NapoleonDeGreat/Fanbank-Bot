@@ -62,6 +62,96 @@ const CLUB_HEX = {
   'Real Madrid':'#FEBE10',
 };
 
+// ─── Club theme definitions ─────────────────────────────────────────────────────
+// Pure styling/presentation objects — no logic lives here.
+// Each theme maps a club name to visual identity tokens used by the
+// presentation layer (sendClubMessage, generateWelcomeFlier) only.
+
+const CLUB_THEMES = {
+  'Arsenal': {
+    primary:     '#DB0007',
+    secondary:   '#9C0706',
+    badge:       '🔴⚪',
+    header:      '🔴⚪ *Arsenal* · The Gunners',
+    separator:   '━━━━━━━━━━━━━━━━━━━━━',
+    accent:      '🔴',
+    tagline:     'North London Is Red!',
+    gradient:    { from: '#DB0007', to: '#7A0005' },
+  },
+  'Chelsea': {
+    primary:     '#034694',
+    secondary:   '#0057A8',
+    badge:       '🔵⚪',
+    header:      '🔵⚪ *Chelsea* · The Blues',
+    separator:   '━━━━━━━━━━━━━━━━━━━━━',
+    accent:      '🔵',
+    tagline:     'Keep The Blue Flag Flying!',
+    gradient:    { from: '#034694', to: '#011D3B' },
+  },
+  'Man United': {
+    primary:     '#DA291C',
+    secondary:   '#FBE122',
+    badge:       '🔴⚫',
+    header:      '🔴⚫ *Man United* · The Red Devils',
+    separator:   '━━━━━━━━━━━━━━━━━━━━━',
+    accent:      '🔴',
+    tagline:     'Glory Glory Man United!',
+    gradient:    { from: '#DA291C', to: '#2D0000' },
+  },
+  'Liverpool': {
+    primary:     '#C8102E',
+    secondary:   '#00B2A9',
+    badge:       '🔴⚪',
+    header:      '🔴⚪ *Liverpool* · The Reds',
+    separator:   '━━━━━━━━━━━━━━━━━━━━━',
+    accent:      '🔴',
+    tagline:     "You'll Never Walk Alone!",
+    gradient:    { from: '#C8102E', to: '#6E0016' },
+  },
+  'Barcelona': {
+    primary:     '#A50044',
+    secondary:   '#004D98',
+    badge:       '🔵🔴',
+    header:      '🔵🔴 *Barcelona* · Blaugrana',
+    separator:   '━━━━━━━━━━━━━━━━━━━━━',
+    accent:      '🔵',
+    tagline:     'Més Que Un Club!',
+    gradient:    { from: '#A50044', to: '#004D98' },
+  },
+  'Real Madrid': {
+    primary:     '#FEBE10',
+    secondary:   '#0065A4',
+    badge:       '⚪🟡',
+    header:      '⚪🟡 *Real Madrid* · Los Blancos',
+    separator:   '━━━━━━━━━━━━━━━━━━━━━',
+    accent:      '🟡',
+    tagline:     'Hala Madrid!',
+    gradient:    { from: '#FEBE10', to: '#A07B00' },
+  },
+};
+
+const DEFAULT_THEME = {
+  primary:     '#1a1a2e',
+  secondary:   '#16213e',
+  badge:       '🏦',
+  header:      '🏦 *FanBank*',
+  separator:   '━━━━━━━━━━━━━━━━━━━━━',
+  accent:      '💙',
+  tagline:     "World's First Banter Neo Gaming Bank",
+  gradient:    { from: '#1a1a2e', to: '#16213e' },
+};
+
+/**
+ * getTheme — the global theme resolver ("provider" for this bot).
+ * Reads the user's stored club and returns its theme object.
+ * Falls back to DEFAULT_THEME for new/unregistered users.
+ * This is purely a styling lookup — no side effects, no state mutation.
+ */
+function getTheme(user) {
+  if (!user?.club) return DEFAULT_THEME;
+  return CLUB_THEMES[user.club] || DEFAULT_THEME;
+}
+
 // ─── DB helpers ────────────────────────────────────────────────────────────────
 
 async function getUser(phone) {
@@ -338,8 +428,8 @@ async function sendMessage(to, text) {
 }
 
 async function sendClubMessage(to, text, user) {
-  const colors = user?.club_data?.colors || user?.clubData?.colors || '🏦';
-  await sendMessage(to, `${colors} ${text}`);
+  const theme = getTheme(user);
+  await sendMessage(to, `${theme.badge} ${text}`);
 }
 
 async function sendQuickReplies(to) {
@@ -432,22 +522,37 @@ async function forwardAudio(to, audioId) {
 async function generateWelcomeFlier(user) {
   try {
     if (!sharp) throw new Error('sharp not available');
-    const clubName = user.club || 'FanBank';
-    const bgHex = CLUB_HEX[clubName] || '#1a1a2e';
+    const theme = getTheme(user);
     const name = (user.name || 'Fan').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const acctNum = (user.account_number || 'Pending').replace(/&/g, '&amp;');
     const bankNameVal = (user.bank_name || 'FanBank').replace(/&/g, '&amp;');
-    const clubLabel = clubName.replace(/&/g, '&amp;');
+    const clubLabel = (user.club || 'FanBank').replace(/&/g, '&amp;');
+    const tagline = theme.tagline.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
     const svg = `<svg width="800" height="450" xmlns="http://www.w3.org/2000/svg">
-      <rect width="800" height="450" fill="${bgHex}"/>
+      <defs>
+        <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%"   stop-color="${theme.gradient.from}"/>
+          <stop offset="100%" stop-color="${theme.gradient.to}"/>
+        </linearGradient>
+        <linearGradient id="stripe" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%"   stop-color="${theme.gradient.to}" stop-opacity="0.4"/>
+          <stop offset="100%" stop-color="${theme.gradient.from}" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <rect width="800" height="450" fill="url(#bg)"/>
+      <rect width="800" height="6" y="0" fill="${theme.primary}" opacity="0.8"/>
+      <rect width="800" height="6" y="444" fill="${theme.primary}" opacity="0.8"/>
+      <rect width="800" height="450" fill="url(#stripe)" opacity="0.3"/>
       <text x="400" y="90"  font-family="sans-serif" font-size="64" fill="white" text-anchor="middle" font-weight="bold">FanBank</text>
-      <text x="400" y="135" font-family="sans-serif" font-size="20" fill="white" text-anchor="middle">World's First Banter Neo Gaming Bank</text>
-      <text x="400" y="210" font-family="sans-serif" font-size="38" fill="white" text-anchor="middle">${name}</text>
-      <text x="400" y="265" font-family="sans-serif" font-size="22" fill="white" text-anchor="middle">${clubLabel} Fan</text>
-      <text x="400" y="330" font-family="sans-serif" font-size="38" fill="white" text-anchor="middle">${acctNum}</text>
-      <text x="400" y="380" font-family="sans-serif" font-size="22" fill="white" text-anchor="middle">${bankNameVal}</text>
-      <text x="400" y="430" font-family="sans-serif" font-size="18" fill="white" text-anchor="middle">Powered by Anchor • fanbank.ng</text>
+      <text x="400" y="128" font-family="sans-serif" font-size="18" fill="white" text-anchor="middle" opacity="0.85">${tagline}</text>
+      <line x1="120" y1="150" x2="680" y2="150" stroke="white" stroke-width="1" opacity="0.3"/>
+      <text x="400" y="210" font-family="sans-serif" font-size="38" fill="white" text-anchor="middle" font-weight="bold">${name}</text>
+      <text x="400" y="252" font-family="sans-serif" font-size="22" fill="white" text-anchor="middle" opacity="0.9">${clubLabel} Fan</text>
+      <line x1="120" y1="275" x2="680" y2="275" stroke="white" stroke-width="1" opacity="0.3"/>
+      <text x="400" y="325" font-family="sans-serif" font-size="40" fill="white" text-anchor="middle" font-weight="bold" letter-spacing="4">${acctNum}</text>
+      <text x="400" y="368" font-family="sans-serif" font-size="20" fill="white" text-anchor="middle" opacity="0.85">${bankNameVal}</text>
+      <text x="400" y="430" font-family="sans-serif" font-size="16" fill="white" text-anchor="middle" opacity="0.6">Powered by Anchor • fanbank.ng</text>
     </svg>`;
 
     return await sharp(Buffer.from(svg)).png().toBuffer();
@@ -484,7 +589,7 @@ async function sendWelcomeFlier(phone, user) {
         type: 'image',
         image: {
           id: mediaId,
-          caption: `${user.club_data?.colors || '🏦'} Welcome to FanBank, ${user.name}! Your account is ready. 🎉`,
+          caption: `${getTheme(user).badge} Welcome to FanBank, ${user.name}! Your account is ready. 🎉`,
         },
       },
       { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } }

@@ -1,0 +1,2 @@
+- [Replit lockfile proxy fix](replit-lockfile-proxy.md) — every npm install in Replit bakes internal proxy URLs; sed fix required before any push
+- [Club theme system](club-theme-system.md) — CLUB_THEMES + getTheme(user) added as non-invasive styling layer; no logic functions were touched
