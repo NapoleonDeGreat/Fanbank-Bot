@@ -145,62 +145,82 @@ const anchorHeaders = {
 async function anchorLookupBVN(bvn) {
   try {
     const res = await axios.get(`${ANCHOR_BASE}/customers?bvn=${bvn}`, { headers: anchorHeaders });
+    console.log('[Anchor] BVN lookup raw response:', JSON.stringify(res.data, null, 2));
     const customer = res.data?.data?.[0];
     if (customer) {
       const a = customer.attributes;
-      return {
-        name: `${a.firstName || ''} ${a.lastName || ''}`.trim(),
-        customerId: customer.id,
-      };
+      console.log('[Anchor] Customer attributes:', JSON.stringify(a, null, 2));
+      // Anchor may return fullName (single field) or firstName+lastName depending on how customer was created
+      const name = a.fullName || `${a.firstName || ''} ${a.lastName || ''}`.trim() || null;
+      console.log('[Anchor] Resolved customer name:', name, '| customerId:', customer.id);
+      return { name, customerId: customer.id };
     }
+    console.log('[Anchor] BVN lookup: no existing customer found');
     return null;
-  } catch {
+  } catch (err) {
+    console.error('[Anchor] BVN lookup error:', err?.response?.data || err.message);
     return null;
   }
 }
 
 async function anchorCreateCustomer(fullName, bvn) {
   try {
-    const res = await axios.post(
-      `${ANCHOR_BASE}/customers`,
-      {
-        data: {
-          type: 'IndividualCustomer',
-          attributes: { fullName, bvn: bvn || '00000000000' },
-        },
+    const payload = {
+      data: {
+        type: 'IndividualCustomer',
+        attributes: { fullName, bvn: bvn || '00000000000' },
       },
-      { headers: anchorHeaders }
-    );
-    return res.data?.data?.id || null;
+    };
+    console.log('[Anchor] createCustomer payload:', JSON.stringify(payload, null, 2));
+    const res = await axios.post(`${ANCHOR_BASE}/customers`, payload, { headers: anchorHeaders });
+    console.log('[Anchor] createCustomer raw response:', JSON.stringify(res.data, null, 2));
+    const customerId = res.data?.data?.id || null;
+    console.log('[Anchor] createCustomer resolved customerId:', customerId);
+    return customerId;
   } catch (err) {
-    console.error('anchorCreateCustomer error:', err?.response?.data || err.message);
+    console.error('[Anchor] createCustomer error:', JSON.stringify(err?.response?.data, null, 2) || err.message);
     return null;
   }
 }
 
 async function anchorCreateVirtualAccount(customerId) {
   try {
-    const res = await axios.post(
-      `${ANCHOR_BASE}/deposit-accounts`,
-      {
-        data: {
-          type: 'DepositAccount',
-          attributes: { currency: 'NGN', productName: 'SAVINGS' },
-          relationships: {
-            customer: { data: { type: 'IndividualCustomer', id: customerId } },
-          },
+    const payload = {
+      data: {
+        type: 'DepositAccount',
+        attributes: { currency: 'NGN', productName: 'SAVINGS' },
+        relationships: {
+          customer: { data: { type: 'IndividualCustomer', id: customerId } },
         },
       },
-      { headers: anchorHeaders }
-    );
-    const acct = res.data?.data;
-    return {
-      accountId: acct?.id,
-      accountNumber: acct?.attributes?.accountNumber,
-      bankName: acct?.attributes?.bankName || acct?.attributes?.bank?.name || 'Anchor MFB',
     };
+    console.log('[Anchor] createVirtualAccount payload:', JSON.stringify(payload, null, 2));
+    const res = await axios.post(`${ANCHOR_BASE}/deposit-accounts`, payload, { headers: anchorHeaders });
+    console.log('[Anchor] createVirtualAccount raw response:', JSON.stringify(res.data, null, 2));
+    const acct = res.data?.data;
+    const attrs = acct?.attributes || {};
+    console.log('[Anchor] deposit account attributes:', JSON.stringify(attrs, null, 2));
+
+    // Anchor may return the account number under several possible keys — try all of them
+    const accountNumber =
+      attrs.accountNumber ||
+      attrs.account_number ||
+      attrs.accountDetails?.accountNumber ||
+      attrs.accountDetails?.number ||
+      attrs.number ||
+      null;
+
+    const bankName =
+      attrs.bankName ||
+      attrs.bank_name ||
+      attrs.bank?.name ||
+      attrs.accountDetails?.bankName ||
+      'Anchor MFB';
+
+    console.log('[Anchor] Resolved accountNumber:', accountNumber, '| bankName:', bankName);
+    return { accountId: acct?.id, accountNumber, bankName };
   } catch (err) {
-    console.error('anchorCreateVirtualAccount error:', err?.response?.data || err.message);
+    console.error('[Anchor] createVirtualAccount error:', JSON.stringify(err?.response?.data, null, 2) || err.message);
     return null;
   }
 }
@@ -511,16 +531,20 @@ async function handleBVN(phone, bvnText) {
   await reply(phone, '🔍 Verifying your BVN... one moment...', user);
 
   const lookup = await anchorLookupBVN(bvn);
-  if (lookup) {
-    await upsertUser(phone, {
-      name: lookup.name,
-      state: 'CREATING_ACCOUNT',
-    });
+  if (lookup && lookup.name) {
+    // BVN found and name resolved — proceed straight to account creation
+    await upsertUser(phone, { name: lookup.name, state: 'CREATING_ACCOUNT' });
     const updated = await getUser(phone);
     await finishOnboarding(phone, bvn, lookup.name, lookup.customerId, updated);
+  } else if (lookup && !lookup.name) {
+    // BVN found in Anchor but name came back empty — store customerId and ask for name
+    console.log('[handleBVN] BVN found but name empty — asking user for name');
+    await upsertUser(phone, { state: 'AWAITING_NAME', pending_transfer: { bvn, customerId: lookup.customerId } });
+    await reply(phone, '📝 BVN verified! Please enter your full name to continue:', user);
   } else {
+    // BVN not found — create new customer after collecting name
     await upsertUser(phone, { state: 'AWAITING_NAME', pending_transfer: { bvn } });
-    await reply(phone, '📝 BVN lookup pending. Enter your full name to continue:', user);
+    await reply(phone, '📝 BVN not found in our records. Enter your full name to continue:', user);
   }
 }
 
@@ -532,7 +556,10 @@ async function handleManualName(phone, nameText) {
     return;
   }
   const bvn = user.pending_transfer?.bvn;
-  const customerId = await anchorCreateCustomer(name, bvn);
+  // Reuse the customerId if one was already found during BVN lookup (avoids creating a duplicate customer)
+  const existingCustomerId = user.pending_transfer?.customerId || null;
+  const customerId = existingCustomerId || await anchorCreateCustomer(name, bvn);
+  console.log('[handleManualName] existingCustomerId:', existingCustomerId, '| resolved customerId:', customerId);
   await upsertUser(phone, {
     name,
     state: 'CREATING_ACCOUNT',
@@ -543,27 +570,38 @@ async function handleManualName(phone, nameText) {
 }
 
 async function finishOnboarding(phone, bvn, name, customerId, user) {
-  await reply(phone, `✅ Identity confirmed! Welcome, *${name}*!\n\n🏗️ Creating your FanBank virtual account...`, user);
+  console.log('[finishOnboarding] name:', name, '| customerId:', customerId);
+
+  // Guard: name must be a non-empty string — fall back to phone if something went wrong upstream
+  const displayName = (typeof name === 'string' && name.trim()) ? name.trim() : 'Fan';
+
+  await reply(phone, `✅ Identity confirmed! Welcome, *${displayName}*!\n\n🏗️ Creating your FanBank virtual account...`, user);
 
   let accountNumber = null;
   let bankName = 'Anchor MFB';
 
   if (customerId) {
     const acct = await anchorCreateVirtualAccount(customerId);
+    console.log('[finishOnboarding] anchorCreateVirtualAccount result:', JSON.stringify(acct, null, 2));
     if (acct) {
       accountNumber = acct.accountNumber;
       bankName = acct.bankName || 'Anchor MFB';
     }
+  } else {
+    console.log('[finishOnboarding] No customerId — skipping virtual account creation');
   }
 
+  console.log('[finishOnboarding] Saving to DB — account_number:', accountNumber, '| bank_name:', bankName, '| name:', displayName);
+
   await upsertUser(phone, {
-    name,
+    name: displayName,
     account_number: accountNumber,
     bank_name: bankName,
     state: 'SETTING_PIN',
   });
 
   const updated = await getUser(phone);
+  console.log('[finishOnboarding] DB record after save:', JSON.stringify({ name: updated.name, account_number: updated.account_number, bank_name: updated.bank_name }, null, 2));
   await reply(
     phone,
     `🎉 Account ready!\n\n💳 Account Number: *${accountNumber || 'Pending'}*\n🏦 Bank: ${bankName}\n\nNow choose your *4-digit banter code* 🔐\n_(This PIN protects every transfer)_`,
