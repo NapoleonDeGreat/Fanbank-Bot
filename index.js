@@ -937,6 +937,14 @@ app.get('/webhook', (req, res) => {
   }
   return res.sendStatus(403);
 });
+return res.sendStatus(403);
+});                          ← after this line
+
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/public/index.html');
+});
+
+app.post('/webhook'...      ← before this line
 
 app.post('/webhook', async (req, res) => {
   console.log('[WEBHOOK POST] received | object:', req.body?.object, '| entries:', req.body?.entry?.length);
