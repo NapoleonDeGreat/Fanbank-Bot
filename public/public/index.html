@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>FanBank</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --black:  #080808;
+      --gold:   #C9A84C;
+      --gold2:  #F0D080;
+      --white:  #F5F5F0;
+      --dim:    rgba(245,245,240,0.5);
+      --dimmer: rgba(245,245,240,0.2);
+    }
+
+    html, body {
+      height: 100%; width: 100%;
+      background: var(--black);
+      font-family: 'Montserrat', sans-serif;
+      overflow: hidden;
+      touch-action: pan-y;
+    }
+
+    .track {
+      display: flex;
+      width: 300%;
+      height: 100vh;
+      transition: transform 0.42s cubic-bezier(0.4,0,0.2,1);
+      will-change: transform;
+    }
+
+    .slide {
+      width: 33.333%;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 28px 130px;
+      position: relative;
+      text-align: center;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    /* ════════════════════════════
+       SLIDE 1 — HERO
+    ════════════════════════════ */
+    .s1 { justify-content: center; }
+
+    .s1::before {
+      content: '';
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(ellipse 80% 55% at 50% 30%, rgba(201,168,76,0.16) 0%, transparent 68%),
+        radial-gradient(ellipse 40% 30% at 15% 85%, rgba(201,168,76,0.06) 0%, transparent 60%);
+      pointer-events: none;
+    }
+
+    .logo-box {
+      width: 112px; height: 112px;
+      border-radius: 28px;
+      background: rgba(201,168,76,0.08);
+      border: 1px solid rgba(201,168,76,0.22);
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 30px;
+      box-shadow:
+        inset 0 1px 0 rgba(240,208,128,0.14),
+        0 24px 64px rgba(0,0,0,0.7);
+      position: relative; z-index: 1;
+      animation: popIn 0.65s cubic-bezier(0.22,1,0.36,1) both;
+    }
+
+    /* DEPLOY: replace .logo-fb span with <img src="/logo.png" width="78" height="78" alt="FanBank"> */
+    .logo-fb {
+      font-weight: 800; font-size: 40px; letter-spacing: -0.02em;
+      background: linear-gradient(140deg, #fff 35%, var(--gold) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text; user-select: none;
+    }
+
+    .s1-wordmark {
+      position: relative; z-index: 1;
+      animation: riseUp 0.65s 0.12s cubic-bezier(0.22,1,0.36,1) both;
+    }
+
+    .s1-name {
+      font-size: 46px; font-weight: 800;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--white); line-height: 1;
+    }
+    .s1-name .b { color: var(--gold); }
+
+    .s1-rule {
+      width: 44px; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--gold), transparent);
+      margin: 18px auto;
+    }
+
+    .s1-tagline {
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 0.26em; text-transform: uppercase;
+      color: rgba(201,168,76,0.7);
+      animation: riseUp 0.65s 0.22s cubic-bezier(0.22,1,0.36,1) both;
+      position: relative; z-index: 1;
+    }
+
+    /* ════════════════════════════
+       SLIDE 2 — FEATURES
+    ════════════════════════════ */
+    .s2 { justify-content: center; padding-top: 0; }
+
+    .s2::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: radial-gradient(ellipse 80% 40% at 50% 0%, rgba(201,168,76,0.09) 0%, transparent 65%);
+      pointer-events: none;
+    }
+
+    .slide-eyebrow {
+      font-size: 10px; font-weight: 700;
+      letter-spacing: 0.28em; text-transform: uppercase;
+      color: var(--gold); margin-bottom: 8px;
+      position: relative; z-index: 1;
+    }
+
+    .slide-headline {
+      font-size: 26px; font-weight: 800;
+      color: var(--white); line-height: 1.18;
+      margin-bottom: 6px;
+      position: relative; z-index: 1;
+    }
+
+    .slide-sub {
+      font-size: 12px; font-weight: 500;
+      color: var(--dim); margin-bottom: 24px;
+      position: relative; z-index: 1;
+    }
+
+    .features {
+      display: flex; flex-direction: column;
+      gap: 10px; width: 100%;
+      position: relative; z-index: 1;
+    }
+
+    .feat {
+      display: flex; align-items: center; gap: 14px;
+      background: linear-gradient(135deg, rgba(201,168,76,0.15) 0%, rgba(201,168,76,0.07) 100%);
+      border: 1px solid rgba(201,168,76,0.28);
+      border-radius: 14px;
+      padding: 14px 16px;
+      text-align: left;
+    }
+
+    .feat-icon { font-size: 22px; flex-shrink: 0; width: 38px; text-align: center; }
+
+    .feat-title {
+      font-size: 12.5px; font-weight: 700;
+      color: var(--white); line-height: 1.2;
+    }
+
+    .feat-desc {
+      font-size: 11px; font-weight: 400;
+      color: rgba(245,245,240,0.6);
+      margin-top: 2px; line-height: 1.4;
+    }
+
+    /* ════════════════════════════
+       SLIDE 3 — WHATSAPP CTA
+    ════════════════════════════ */
+    .s3 { justify-content: center; }
+
+    .s3::before {
+      content: '';
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(ellipse 70% 50% at 50% 55%, rgba(201,168,76,0.1) 0%, transparent 65%),
+        radial-gradient(ellipse 40% 30% at 80% 15%, rgba(29,168,81,0.05) 0%, transparent 55%);
+      pointer-events: none;
+    }
+
+    .wa-bubble {
+      width: 88px; height: 88px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #1DA851 0%, #128C3E 100%);
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 28px;
+      box-shadow: 0 16px 48px rgba(29,168,81,0.3);
+      position: relative; z-index: 1;
+    }
+    .wa-bubble svg { width: 44px; height: 44px; }
+
+    .s3-headline {
+      font-size: 28px; font-weight: 800;
+      color: var(--white); line-height: 1.15;
+      margin-bottom: 14px;
+      position: relative; z-index: 1;
+    }
+    .s3-headline span { color: var(--gold); }
+
+    .s3-body {
+      font-size: 13px; font-weight: 400;
+      color: var(--dim); line-height: 1.65;
+      max-width: 280px; margin-bottom: 24px;
+      position: relative; z-index: 1;
+    }
+
+    .wa-pill {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(29,168,81,0.12);
+      border: 1px solid rgba(29,168,81,0.25);
+      border-radius: 100px;
+      padding: 8px 18px;
+      font-size: 12px; font-weight: 700;
+      color: #4CD964;
+      letter-spacing: 0.06em;
+      position: relative; z-index: 1;
+    }
+
+    /* ════════════════════════════
+       BOTTOM BAR
+    ════════════════════════════ */
+    .bottom-bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      z-index: 100;
+      padding: 0 28px 36px;
+      background: linear-gradient(to top, rgba(8,8,8,1) 60%, transparent);
+      display: flex; flex-direction: column;
+      align-items: center; gap: 16px;
+    }
+
+    .dots { display: flex; gap: 8px; align-items: center; }
+
+    .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: rgba(245,245,240,0.2);
+      transition: all 0.3s ease; cursor: pointer;
+    }
+    .dot.active { background: var(--gold); width: 20px; border-radius: 3px; }
+
+    .cta-btn {
+      display: flex; align-items: center; justify-content: center;
+      gap: 10px; width: 100%; max-width: 340px;
+      background: linear-gradient(135deg, var(--gold) 0%, var(--gold2) 50%, var(--gold) 100%);
+      background-size: 200% 100%;
+      color: #080808;
+      font-family: 'Montserrat', sans-serif;
+      font-weight: 700; font-size: 14px;
+      letter-spacing: 0.07em; text-transform: uppercase;
+      padding: 17px 28px; border-radius: 100px;
+      text-decoration: none; border: none; cursor: pointer;
+      box-shadow: 0 4px 28px rgba(201,168,76,0.32);
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+    .cta-btn:active { transform: scale(0.97); }
+    .cta-btn svg { width: 18px; height: 18px; flex-shrink: 0; }
+
+    .footer-txt {
+      font-size: 9px; font-weight: 600;
+      letter-spacing: 0.18em; text-transform: uppercase;
+      color: rgba(245,245,240,0.18); text-align: center;
+    }
+    .footer-txt strong { color: rgba(245,245,240,0.3); font-weight: 600; }
+
+    @keyframes popIn {
+      from { opacity: 0; transform: scale(0.72); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    @keyframes riseUp {
+      from { opacity: 0; transform: translateY(18px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .track { transition: none; }
+      .logo-box, .s1-wordmark, .s1-tagline { animation: none; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="track" id="track">
+
+  <!-- ══ SLIDE 1 — HERO ══ -->
+  <div class="slide s1">
+    <div class="logo-box">
+      <!-- DEPLOY: replace this span with <img src="/logo.png" width="78" height="78" alt="FanBank"> -->
+      <span class="logo-fb" aria-label="FanBank">FB</span>
+    </div>
+    <div class="s1-wordmark">
+      <div class="s1-name">Fan<span class="b">Bank</span></div>
+      <div class="s1-rule"></div>
+    </div>
+    <p class="s1-tagline">Where Football Meets Finance</p>
+  </div>
+
+  <!-- ══ SLIDE 2 — FEATURES ══ -->
+  <div class="slide s2">
+    <p class="slide-eyebrow">What you get</p>
+    <h2 class="slide-headline">Banking with<br/>serious banter</h2>
+    <p class="slide-sub">Everything in one WhatsApp chat</p>
+    <div class="features">
+      <div class="feat">
+        <div class="feat-icon">🎙️</div>
+        <div class="feat-text">
+          <div class="feat-title">Banter receipts on every transfer</div>
+          <div class="feat-desc">Send money — your club automatically roasts the receiver</div>
+        </div>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">🏆</div>
+        <div class="feat-text">
+          <div class="feat-title">Win jerseys &amp; cash in Fan Leagues</div>
+          <div class="feat-desc">Bank more, climb the leaderboard, win club prizes weekly</div>
+        </div>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">⚽</div>
+        <div class="feat-text">
+          <div class="feat-title">Your club colours, your account</div>
+          <div class="feat-desc">Arsenal · Chelsea · Liverpool · Man Utd · Barça · Real Madrid</div>
+        </div>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">📱</div>
+        <div class="feat-text">
+          <div class="feat-title">No app. No download. Ever.</div>
+          <div class="feat-desc">Transfers, airtime &amp; savings — all inside WhatsApp</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ SLIDE 3 — WHATSAPP CTA ══ -->
+  <div class="slide s3">
+    <div class="wa-bubble" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+        <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+      </svg>
+    </div>
+    <h2 class="s3-headline">It all happens<br/>on <span>WhatsApp</span></h2>
+    <p class="s3-body">No app store. No forms. Just message FanBank and your account is ready — with your club identity built in.</p>
+    <div class="wa-pill">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+      +234 703 750 7344
+    </div>
+  </div>
+
+</div>
+
+<!-- ══ BOTTOM BAR ══ -->
+<div class="bottom-bar">
+  <div class="dots" id="dots">
+    <div class="dot active" data-index="0"></div>
+    <div class="dot" data-index="1"></div>
+    <div class="dot" data-index="2"></div>
+  </div>
+  <a class="cta-btn" href="https://wa.me/2347037507344" rel="noopener noreferrer">
+    <svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+    </svg>
+    <span id="ctaLabel">Get Started</span>
+  </a>
+  <p class="footer-txt">Powered by <strong>Technix Concept Limited</strong> (RC 7237264)</p>
+</div>
+
+<script>
+  const track    = document.getElementById('track');
+  const dotEls   = document.querySelectorAll('.dot');
+  const ctaLabel = document.getElementById('ctaLabel');
+  const SLIDES   = 3;
+  let current = 0, startX = 0, dragging = false;
+
+  function goTo(n) {
+    current = Math.max(0, Math.min(SLIDES - 1, n));
+    track.style.transform = `translateX(-${current * 33.333}%)`;
+    dotEls.forEach((d, i) => d.classList.toggle('active', i === current));
+    ctaLabel.textContent = current === SLIDES - 1 ? 'Open on WhatsApp' : 'Get Started';
+  }
+
+  dotEls.forEach(d => d.addEventListener('click', () => goTo(+d.dataset.index)));
+
+  track.addEventListener('touchstart', e => { startX = e.touches[0].clientX; dragging = true; }, { passive: true });
+  track.addEventListener('touchend', e => {
+    if (!dragging) return;
+    const diff = startX - e.changedTouches[0].clientX;
+    if (Math.abs(diff) > 44) goTo(diff > 0 ? current + 1 : current - 1);
+    dragging = false;
+  }, { passive: true });
+  track.addEventListener('mousedown', e => { startX = e.clientX; dragging = true; });
+  track.addEventListener('mouseup', e => {
+    if (!dragging) return;
+    const diff = startX - e.clientX;
+    if (Math.abs(diff) > 44) goTo(diff > 0 ? current + 1 : current - 1);
+    dragging = false;
+  });
+</script>
+
+</body>
+</html>
