@@ -939,7 +939,7 @@ app.get('/webhook', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/public/index.html');
+  res.sendFile(__dirname + '/public/public/index.html');
 });
 
 app.post('/webhook', async (req, res) => {
